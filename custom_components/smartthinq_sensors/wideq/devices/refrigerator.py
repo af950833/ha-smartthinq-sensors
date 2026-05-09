@@ -363,7 +363,7 @@ class RefrigeratorDevice(Device):
     async def poll(self) -> RefrigeratorStatus | None:
         """Poll the device's current state."""
 
-        res = await self._device_poll(REFR_ROOT_DATA)
+        res = await self._device_poll(REFR_ROOT_DATA, thinq2_query_device=True)
         if not res:
             return None
 
