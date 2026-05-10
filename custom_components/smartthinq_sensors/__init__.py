@@ -498,7 +498,11 @@ class LGEDevice:
             # If device status is "on" we reset the status, otherwise we just
             # ignore and use previous known state
             state = None
-            if self._state.is_on and self._disc_count >= MAX_DISC_COUNT:
+            if (
+                self._type != DeviceType.REFRIGERATOR
+                and self._state.is_on
+                and self._disc_count >= MAX_DISC_COUNT
+            ):
                 _LOGGER.warning(
                     "Status for device %s was reset because disconnected or unreachable",
                     self._name,
