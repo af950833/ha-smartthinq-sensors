@@ -49,6 +49,7 @@ from .wideq import (
     DeviceInfo as ThinQDeviceInfo,
     DeviceType,
     TemperatureUnit,
+    WM_DEVICE_TYPES,
     get_lge_device,
 )
 from .wideq.core_async import ClientAsync
@@ -78,6 +79,7 @@ AUTH_RETRY = "auth_retry"
 MAX_AUTH_RETRY = 4
 
 MAX_DISC_COUNT = 4
+KEEP_STATE_ON_REFRESH_ERROR_TYPES = (DeviceType.REFRIGERATOR, *WM_DEVICE_TYPES)
 SIGNAL_RELOAD_ENTRY = f"{DOMAIN}_reload_entry"
 
 DISCOVERED_DEVICES = "discovered_devices"
@@ -499,7 +501,7 @@ class LGEDevice:
             # ignore and use previous known state
             state = None
             if (
-                self._type != DeviceType.REFRIGERATOR
+                self._type not in KEEP_STATE_ON_REFRESH_ERROR_TYPES
                 and self._state.is_on
                 and self._disc_count >= MAX_DISC_COUNT
             ):
