@@ -69,7 +69,7 @@ class Monitor:
     _client_lock = asyncio.Lock()
     _client_connected = True
     _critical_error = False
-    _last_client_refresh = datetime.min
+    _last_client_refresh = datetime.min.replace(tzinfo=timezone.utc)
     _not_logged_count = 0
 
     def __init__(self, client: ClientAsync, device_info: DeviceInfo) -> None:
@@ -134,7 +134,10 @@ class Monitor:
         if Monitor._client_connected:
             return True
         call_time = datetime.now(timezone.utc)
-        difference = (call_time - Monitor._last_client_refresh).total_seconds()
+        last_client_refresh = Monitor._last_client_refresh
+        if last_client_refresh.tzinfo is None:
+            last_client_refresh = last_client_refresh.replace(tzinfo=timezone.utc)
+        difference = (call_time - last_client_refresh).total_seconds()
         if difference <= MIN_TIME_BETWEEN_CLI_REFRESH:
             return False
 
