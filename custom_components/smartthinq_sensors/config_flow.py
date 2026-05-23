@@ -39,14 +39,17 @@ from homeassistant.helpers.selector import (
 
 from . import LGEAuthentication, is_valid_ha_version
 from .const import (
+    CONF_AUTH_MODE,
     CONF_LANGUAGE,
     CONF_OAUTH2_URL,
     CONF_USE_API_V2,
     CONF_USE_HA_SESSION,
     CONF_USE_REDIRECT,
+    CONF_USE_WEB_SESSION,
     DOMAIN,
     __min_ha_version__,
 )
+from .wideq.core_async import AUTH_MODE_OAUTH, AUTH_MODE_WEB
 from .wideq.core_exceptions import AuthenticationError, InvalidCredentialError
 
 CONF_LOGIN = "login_url"
@@ -88,6 +91,7 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
         self._client_id: str | None = None
         self._oauth2_url: str | None = None
         self._use_ha_session = False
+        self._auth_mode = AUTH_MODE_OAUTH
 
         self._user_lang: str | None = None
         self._login_url: str | None = None
@@ -170,6 +174,7 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
         region = user_input[CONF_REGION]
         language = user_input[CONF_LANGUAGE]
         use_redirect = user_input[CONF_USE_REDIRECT]
+        use_web_session = user_input.get(CONF_USE_WEB_SESSION, False)
         self._use_ha_session = user_input.get(CONF_USE_HA_SESSION, False)
 
         if error := self._validate_region_language(region, language):
@@ -179,8 +184,9 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
         self._language = language
         if len(language) == 2:
             self._language += f"-{region}"
+        self._auth_mode = AUTH_MODE_WEB if use_web_session else AUTH_MODE_OAUTH
 
-        if not use_redirect and not (username and password):
+        if (use_web_session or not use_redirect) and not (username and password):
             if self.source == SOURCE_REAUTH and not (username or password):
                 return await self.async_step_reauth_confirm()
             return self._show_form(errors="no_user_info")
@@ -188,8 +194,10 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
         lge_auth = LGEAuthentication(
             self.hass, self._region, self._language, self._use_ha_session
         )
-        if not use_redirect:
-            oauth_info = await lge_auth.get_oauth_info_from_login(username, password)
+        if use_web_session or not use_redirect:
+            oauth_info = await lge_auth.get_oauth_info_from_login(
+                username, password, self._auth_mode
+            )
             if not oauth_info:
                 return await self._manage_error(RESULT_CRED_FAIL, True)
 
@@ -239,7 +247,7 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
 
         try:
             client = await lge_auth.create_client_from_token(
-                self._token, self._oauth2_url
+                self._token, self._oauth2_url, auth_mode=self._auth_mode
             )
         except (AuthenticationError, InvalidCredentialError) as exc:
             msg = (
@@ -289,6 +297,7 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
             CONF_REGION: self._region,
             CONF_LANGUAGE: self._language,
             CONF_TOKEN: self._token,
+            CONF_AUTH_MODE: self._auth_mode,
             CONF_USE_API_V2: True,
         }
         if self._client_id:
@@ -334,6 +343,7 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
                     CONF_LANGUAGE, default=self._user_lang or ""
                 ): SelectSelector(_dict_to_select(LANGUAGES)),
                 vol.Required(CONF_USE_REDIRECT, default=False): bool,
+                vol.Required(CONF_USE_WEB_SESSION, default=False): bool,
             }
         )
         if self.show_advanced_options:

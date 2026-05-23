@@ -33,6 +33,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
     CLIENT,
+    CONF_AUTH_MODE,
     CONF_LANGUAGE,
     CONF_OAUTH2_URL,
     CONF_USE_API_V2,
@@ -52,7 +53,7 @@ from .wideq import (
     WM_DEVICE_TYPES,
     get_lge_device,
 )
-from .wideq.core_async import ClientAsync
+from .wideq.core_async import AUTH_MODE_OAUTH, ClientAsync
 from .wideq.core_exceptions import (
     AuthenticationError,
     InvalidCredentialError,
@@ -128,7 +129,7 @@ class LGEAuthentication:
         return None
 
     async def get_oauth_info_from_login(
-        self, username: str, password: str
+        self, username: str, password: str, auth_mode: str = AUTH_MODE_OAUTH
     ) -> dict[str, str] | None:
         """Retrieve oauth info from user login credential."""
         try:
@@ -138,6 +139,7 @@ class LGEAuthentication:
                 self._region,
                 self._language,
                 aiohttp_session=self._client_session,
+                auth_mode=auth_mode,
             )
         except Exception as exc:  # pylint: disable=broad-except
             _LOGGER.exception("Error retrieving OAuth info from ThinQ", exc_info=exc)
@@ -150,6 +152,7 @@ class LGEAuthentication:
         oauth_url: str | None = None,
         client_id: str | None = None,
         update_clientid_callback: Callable[[str], None] | None = None,
+        auth_mode: str = AUTH_MODE_OAUTH,
     ) -> ClientAsync:
         """Create a new client using refresh token."""
         return await ClientAsync.from_token(
@@ -160,6 +163,7 @@ class LGEAuthentication:
             aiohttp_session=self._client_session,
             client_id=client_id,
             update_clientid_callback=update_clientid_callback,
+            auth_mode=auth_mode,
         )
 
 
@@ -219,6 +223,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client_id: str | None = entry.data.get(CONF_CLIENT_ID)
     use_api_v2 = entry.data.get(CONF_USE_API_V2, False)
     use_ha_session = entry.data.get(CONF_USE_HA_SESSION, False)
+    auth_mode = entry.data.get(CONF_AUTH_MODE, AUTH_MODE_OAUTH)
 
     if not use_api_v2:
         _LOGGER.warning(
@@ -253,7 +258,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     lge_auth = LGEAuthentication(hass, region, language, use_ha_session)
     try:
         client = await lge_auth.create_client_from_token(
-            refresh_token, oauth2_url, client_id, _update_clientid_callback
+            refresh_token,
+            oauth2_url,
+            client_id,
+            _update_clientid_callback,
+            auth_mode,
         )
     except (AuthenticationError, InvalidCredentialError) as exc:
         if (auth_retry := hass.data[DOMAIN].get(AUTH_RETRY, 0)) >= MAX_AUTH_RETRY:
