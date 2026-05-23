@@ -13,6 +13,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import ssl
 import sys
 from typing import Any
@@ -48,21 +49,65 @@ ENABLE_CLEANUP_CLOSED = not (3, 11, 1) <= sys.version_info < (3, 11, 4)
 # enable logging of auth information
 LOG_AUTH_INFO = False
 
+AUTH_MODE_OAUTH = "oauth"
+AUTH_MODE_WEB = "web"
+
 # v2
 V2_API_KEY = "VGhpblEyLjAgU0VSVklDRQ=="
+V2_NSCREEN_API_KEY = "ijVUYQIKVVaLNpfZrLOI2CeWrYlrAkImRFbGvIRQFrf3qjUhWLOgbxvtICtr1OiC"
 # V2_CLIENT_ID = "65260af7e8e6547b51fdccf930097c51eb9885a508d3fddfa9ee6cdec22ae1bd"
 V2_CLIENT_ID = "c713ea8e50f657534ff8b9d373dfebfc2ed70b88285c26b8ade49868c0b164d9"
 V2_SVC_PHASE = "OP"
 V2_APP_LEVEL = "PRD"
-V2_APP_OS = "ANDROID"  # "LINUX"
-V2_APP_TYPE = "NUTS"
-V2_APP_VER = "5.0.1200"  # "3.0.1700"
+V2_APP_OS = "browser"
+V2_APP_TYPE = "WEB"
+V2_APP_VER = "5.1.2600"
 V2_THINQ_APP_VER = "LG ThinQ/5.0.12120"
+V2_APP_ORIGIN = "app-web-browser"
+V2_WEB_REFERER = "https://my.lgthinq.com/"
+V2_WEB_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/125.0.0.0 Safari/537.36"
+)
+V2_CLIENT_ID_REFRESH_INTERVAL = 60 * 60
 
 # new
 V2_GATEWAY_URL = "https://route.lgthinq.com:46030/v1/service/application/gateway-uri"
 V2_GATEWAY_URI_KEY = "uris"
 V2_AUTH_PATH = "/oauth/1.0/oauth2/token"
+V2_NSCREEN_AUTH_REFRESH_URL = "https://kic-nscreen.lgthinq.com/v1/auth/refresh"
+V2_NSCREEN_AUTH_LOGIN_URL = "https://kic-nscreen.lgthinq.com/v1/auth/login"
+V2_WEB_USER_INFO_URL = (
+    "https://kr.lid.lgemembers.com/realms/LGE-MP/"
+    "protocol/lge-openid-connect/userinfo"
+)
+V2_WEB_SIGNIN_ACT_URL = "https://kr.lgemembers.com/lgacc/front/v1/signin/signInAct"
+V2_WEB_KC_CODE_URL = "https://kr.lgemembers.com/lgacc/service/v1/keycloak/kcCode"
+V2_WEB_POST_SIGNIN_TOKEN_RE = (
+    r"setSessionStorageObject\('post_signin_token', '([^']+)'\)"
+)
+V2_WEB_USER_INFO_LEGACY_URL = (
+    "https://kr.lgemembers.com/lgacc/service/v1/keycloak/userInfo"
+)
+V2_WEB_SEARCH_USER_NO_URL = (
+    "https://kr.lgemembers.com/lgacc/front/v1/signin/searchByUserNo"
+)
+V2_WEB_SIGNIN_COMPLETE_URL = (
+    "https://kr.lgemembers.com/lgacc/front/v1/signin/signInComplete"
+)
+V2_WEB_DECRYPT_TOKEN_URL = (
+    "https://kr.lgemembers.com/lgacc/service/v1/keycloak/decryptTokenUrl"
+)
+V2_WEB_LOGIN_PUBLIC_KEY = b"""-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkb2bcfvV5Q2Ag0UI6Mj3
+oDmS0b2I9RTIRFhIVqrO47FRKQaFQpjiKkgxMcbLqK+ACTORrt6eA6srX/HKGtN9
+aJvM/8ZzqAe1tztli/yQtm6MezKExTtSAxYkawaV2s+pj7RkOes+BsJ0ahL/HC1x
+divxU4M0DN7AKdOyQM3XJnAfIimb1yhI5VeQkSBLDeAY9OTjRdAn4N6aRXaIwtck
+hQYDs7t120uhRvtRX8WVY+YiROCKTgK9PPcvaGgWublxLnSPFFb4BGYDan2Ro0DL
+b0DD1It4vqePBDWZD9MByhRJ67mQGXOJ/u3EEbctHB7TZkejjWn5sArU6K1jP0LB
+hwIDAQAB
+-----END PUBLIC KEY-----"""
 V2_OAUTH_URL_KEY = "empOauthBaseUri"
 V2_USER_INFO = "/users/profile"
 V2_EMP_SESS_URL = "https://emp-oauth.lgecloud.com/emp/oauth2/token/empsession"
@@ -181,6 +226,7 @@ class CoreAsync:
         session: aiohttp.ClientSession | None = None,
         client_id: str | None = None,
         update_clientid_callback: Callable[[str], None] | None = None,
+        auth_mode: str = AUTH_MODE_OAUTH,
     ):
         """
         Create the CoreAsync object
@@ -197,7 +243,11 @@ class CoreAsync:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._oauth_url = oauth_url
         self._client_id = client_id
+        self._client_id_created_on = (
+            datetime.now(timezone.utc) if client_id is not None else None
+        )
         self._update_clientid_callback = update_clientid_callback
+        self._auth_mode = auth_mode
         self._lang_pack_url = None
 
         if session:
@@ -243,6 +293,21 @@ class CoreAsync:
         self, user_number: str | None = None, force_refresh: bool = False
     ) -> str:
         """Generate a new clent ID or return existing."""
+        if (
+            self._client_id is not None
+            and not force_refresh
+            and user_number is not None
+            and self._client_id_created_on is not None
+        ):
+            client_id_age = (
+                datetime.now(timezone.utc) - self._client_id_created_on
+            ).total_seconds()
+            if client_id_age >= V2_CLIENT_ID_REFRESH_INTERVAL:
+                _LOGGER.info(
+                    "Refreshing client ID after %.0f seconds", client_id_age
+                )
+                force_refresh = True
+
         if self._client_id is not None and not force_refresh:
             return self._client_id
         if user_number is None:
@@ -255,9 +320,14 @@ class CoreAsync:
             )
         )
         self._client_id = hash_object.hexdigest()
+        self._client_id_created_on = datetime.now(timezone.utc)
         if self._update_clientid_callback is not None:
             self._update_clientid_callback(self._client_id)
         return self._client_id
+
+    def _web_client_id(self) -> str:
+        """Return a ThinQ Web-style client ID."""
+        return self._get_client_id("web") or V2_CLIENT_ID
 
     @staticmethod
     async def _get_json_resp(response: aiohttp.ClientResponse) -> dict:
@@ -300,6 +370,7 @@ class CoreAsync:
         country=DEFAULT_COUNTRY,
         language=DEFAULT_LANGUAGE,
         security_key=False,
+        web_auth=False,
     ) -> dict:
         """Prepare API2 header."""
 
@@ -314,17 +385,24 @@ class CoreAsync:
             "x-message-id": gen_uuid(),
             "x-service-code": SVC_CODE,
             "x-service-phase": V2_SVC_PHASE,
+            "x-origin": V2_APP_ORIGIN,
             "x-thinq-app-level": V2_APP_LEVEL,
+            "x-thinq-app-logintype": "LGE" if access_token else "undefined",
             "x-thinq-app-os": V2_APP_OS,
             "x-thinq-app-type": V2_APP_TYPE,
             "x-thinq-app-ver": V2_APP_VER,
+            "Referer": V2_WEB_REFERER,
+            "User-Agent": V2_WEB_USER_AGENT,
         }
 
         if security_key:
             headers["x-thinq-security-key"] = SECURITY_KEY
 
         if access_token:
-            headers["x-emp-token"] = access_token
+            if web_auth:
+                headers["Authorization"] = f"Bearer {access_token}"
+            else:
+                headers["x-emp-token"] = access_token
 
         if user_number:
             headers["x-user-no"] = user_number
@@ -366,6 +444,7 @@ class CoreAsync:
                 extra_headers=headers or {},
                 country=self._country,
                 language=self._language,
+                web_auth=self._auth_mode == AUTH_MODE_WEB,
             ),
             timeout=self._timeout,
             raise_for_status=False,
@@ -404,6 +483,7 @@ class CoreAsync:
                 country=self._country,
                 language=self._language,
                 security_key=True,
+                web_auth=self._auth_mode == AUTH_MODE_WEB,
             ),
             timeout=self._timeout,
             raise_for_status=False,
@@ -794,6 +874,288 @@ class CoreAsync:
 
         return out["access_token"], out["expires_in"]
 
+    @staticmethod
+    def _web_form_headers(referer: str) -> dict:
+        """Return headers used by the ThinQ Web LG account form posts."""
+        return {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Origin": "https://kr.lgemembers.com",
+            "Referer": referer,
+            "User-Agent": V2_WEB_USER_AGENT,
+            "X-Requested-With": "XMLHttpRequest",
+        }
+
+    @staticmethod
+    async def _web_encrypted_user_id(username: str) -> str:
+        """Encrypt the LG account user id in the same way as ThinQ Web."""
+
+        def _encrypt() -> str:
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.primitives.serialization import (
+                load_pem_public_key,
+            )
+
+            public_key = load_pem_public_key(V2_WEB_LOGIN_PUBLIC_KEY)
+            encrypted = public_key.encrypt(username.encode("utf8"), padding.PKCS1v15())
+            return quote(base64.b64encode(encrypted).decode(), safe="")
+
+        return await asyncio.to_thread(_encrypt)
+
+    async def web_user_login(self, username: str, password: str) -> dict:
+        """Login through the ThinQ Web flow and return auth information."""
+        session = self._get_session()
+        login_headers = self._thinq2_headers(
+            client_id=self._web_client_id(),
+            country=self._country,
+            language=self._language,
+            extra_headers={
+                "x-api-key": V2_NSCREEN_API_KEY,
+                "x-origin": "webapp",
+            },
+        )
+        login_params = {
+            "country": self._country,
+            "language": self._language,
+            "svc_code": SVC_CODE,
+            "callback_url": V2_WEB_REFERER.rstrip("/"),
+        }
+        async with session.get(
+            url=V2_NSCREEN_AUTH_LOGIN_URL,
+            params=login_params,
+            headers=login_headers,
+            timeout=self._timeout,
+            raise_for_status=False,
+        ) as resp:
+            login_info = await self._get_json_resp(resp)
+
+        redirect_url = (login_info.get("result") or {}).get("redirectUrl")
+        if login_info.get("resultCode") != "0000" or not redirect_url:
+            raise exc.AuthenticationError("ThinQ Web login URL request failed")
+
+        async with session.get(
+            url=redirect_url,
+            headers={"User-Agent": V2_WEB_USER_AGENT, "Referer": V2_WEB_REFERER},
+            timeout=self._timeout,
+            raise_for_status=False,
+        ) as resp:
+            signin_url = str(resp.url)
+
+        signin_query = parse_qs(urlparse(signin_url).query)
+        kc_state = (signin_query.get("kc_state") or [""])[0]
+        nonce = (signin_query.get("nonce") or [""])[0]
+        if not kc_state or not nonce:
+            raise exc.AuthenticationError("ThinQ Web sign-in page request failed")
+
+        hash_pwd = hashlib.sha512()
+        hash_pwd.update(password.encode("utf8"))
+        signin_data = {
+            "userId": await self._web_encrypted_user_id(username),
+            "userPw": hash_pwd.hexdigest(),
+            "svcCode": SVC_CODE,
+            "itgTermsUseFlag": "Y",
+            "itgUserType": "",
+            "doneYn": "",
+            "skipYn": "N",
+            "clientId": "",
+            "kcState": kc_state,
+            "ipadYn": "N",
+            "local_country": self._country,
+            "local_lang": self._language.split("-")[0],
+            "svc_code": SVC_CODE,
+        }
+        async with session.post(
+            url=V2_WEB_SIGNIN_ACT_URL,
+            data=urlencode(signin_data),
+            headers=self._web_form_headers(signin_url),
+            timeout=self._timeout,
+            raise_for_status=False,
+        ) as resp:
+            signin_info = await self._get_json_resp(resp)
+
+        account = signin_info.get("account") or {}
+        if not account.get("userNo"):
+            raise exc.InvalidCredentialError("ThinQ Web user login failed")
+
+        local_lang = self._language.split("-")[0]
+        kc_data = {
+            "kc_state": kc_state,
+            "nonce": nonce,
+            "userNo": account.get("userNo"),
+            "userID": account.get("userID"),
+            "userIDType": account.get("userIDType"),
+            "email": account.get("email") or account.get("userID"),
+            "auto_login_yn": "",
+            "country": self._country,
+            "language": "null",
+            "local_country": self._country,
+            "local_lang": local_lang,
+            "svc_code": SVC_CODE,
+        }
+        async with session.post(
+            url=V2_WEB_KC_CODE_URL,
+            data=urlencode(kc_data),
+            headers=self._web_form_headers(signin_url),
+            timeout=self._timeout,
+            raise_for_status=False,
+        ) as resp:
+            post_signin_url = str(resp.url)
+            post_signin_html = await resp.text()
+
+        token_match = re.search(V2_WEB_POST_SIGNIN_TOKEN_RE, post_signin_html)
+        if not token_match:
+            raise exc.AuthenticationError("ThinQ Web post sign-in token not found")
+
+        extra_headers = self._web_form_headers(post_signin_url)
+        await self._web_post_optional(
+            V2_WEB_USER_INFO_LEGACY_URL,
+            {"local_country": self._country, "local_lang": local_lang, "svc_code": SVC_CODE},
+            extra_headers,
+        )
+        await self._web_post_optional(
+            V2_WEB_SEARCH_USER_NO_URL,
+            {"userNo": account.get("userNo")},
+            extra_headers,
+        )
+        await self._web_post_optional(
+            V2_WEB_SIGNIN_COMPLETE_URL,
+            {
+                "loginSessionID": account.get("loginSessionID"),
+                "uuid": str(uuid.uuid4()),
+                "svcCode": SVC_CODE,
+                "serviceYn": "Y",
+                "deviceId": hashlib.md5(str(uuid.uuid4()).encode()).hexdigest(),
+                "autoYn": "N",
+                "ipadYn": "N",
+                "local_country": self._country,
+                "local_lang": local_lang,
+                "svc_code": SVC_CODE,
+            },
+            extra_headers,
+        )
+
+        await self._web_follow_login_redirects(
+            V2_WEB_DECRYPT_TOKEN_URL,
+            {
+                "token": token_match.group(1),
+                "local_country": self._country,
+                "local_lang": local_lang,
+                "svc_code": SVC_CODE,
+            },
+            extra_headers,
+        )
+        refresh_token = self._web_refresh_token_from_cookie()
+        if not refresh_token:
+            raise exc.AuthenticationError("ThinQ Web refresh token not found")
+
+        access_token, token_validity = await self.refresh_web_auth(refresh_token)
+        user_number = await self.get_web_user_number(access_token)
+        return {
+            "refresh_token": refresh_token,
+            "access_token": access_token,
+            "token_validity": token_validity,
+            "user_number": user_number,
+            "auth_mode": AUTH_MODE_WEB,
+        }
+
+    async def _web_post_optional(
+        self, url: str, data: dict, headers: dict
+    ) -> None:
+        """POST an auxiliary ThinQ Web login request."""
+        async with self._get_session().post(
+            url=url,
+            data=urlencode(data),
+            headers=headers,
+            timeout=self._timeout,
+            raise_for_status=False,
+        ) as resp:
+            await resp.read()
+
+    async def _web_follow_login_redirects(
+        self, url: str, data: dict, headers: dict
+    ) -> None:
+        """Follow the LG account redirects that create the Web refresh cookie."""
+        session = self._get_session()
+        referer = headers.get("Referer", V2_WEB_REFERER)
+        async with session.post(
+            url=url,
+            data=urlencode(data),
+            headers=headers,
+            timeout=self._timeout,
+            raise_for_status=False,
+            allow_redirects=False,
+        ) as resp:
+            next_url = resp.headers.get("Location")
+            await resp.read()
+
+        for _ in range(8):
+            if not next_url:
+                return
+            next_url = urljoin(url, next_url)
+            async with session.get(
+                url=next_url,
+                headers={"User-Agent": V2_WEB_USER_AGENT, "Referer": referer},
+                timeout=self._timeout,
+                raise_for_status=False,
+                allow_redirects=False,
+            ) as resp:
+                referer = str(resp.url)
+                next_url = resp.headers.get("Location")
+                await resp.read()
+
+    def _web_refresh_token_from_cookie(self) -> str | None:
+        """Return the ThinQ Web refresh token stored by the login redirects."""
+        cookie_jar = getattr(self._get_session(), "cookie_jar", None)
+        if not cookie_jar:
+            return None
+        for cookie in cookie_jar:
+            if cookie.key == "refresh_token":
+                return cookie.value
+        return None
+
+    async def refresh_web_auth(self, refresh_token: str):
+        """Get a ThinQ Web access token using the Web refresh_token cookie."""
+        headers = self._thinq2_headers(
+            client_id=self._web_client_id(),
+            country=self._country,
+            language=self._language,
+            extra_headers={
+                "x-api-key": V2_NSCREEN_API_KEY,
+                "x-origin": "webapp",
+                "Referer": V2_WEB_REFERER,
+                "Cookie": f"refresh_token={refresh_token}",
+            },
+        )
+        async with self._get_session().post(
+            url=V2_NSCREEN_AUTH_REFRESH_URL,
+            headers=headers,
+            timeout=self._timeout,
+            raise_for_status=False,
+        ) as resp:
+            out = await self._get_json_resp(resp)
+
+        if out.get("resultCode") != "0000":
+            raise exc.TokenError()
+
+        result = out.get("result") or {}
+        return result["accessToken"], result.get("expiresIn", DEFAULT_TOKEN_VALIDITY)
+
+    async def get_web_user_number(self, access_token: str) -> str | None:
+        """Get the ThinQ user number from a ThinQ Web access token."""
+        async with self._get_session().get(
+            url=V2_WEB_USER_INFO_URL,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {access_token}",
+                "Referer": V2_WEB_REFERER,
+                "User-Agent": V2_WEB_USER_AGENT,
+            },
+            timeout=self._timeout,
+            raise_for_status=False,
+        ) as resp:
+            out = await self._get_json_resp(resp)
+        return out.get("user_no")
+
 
 class Gateway:
     """ThinQ authentication gateway."""
@@ -913,6 +1275,7 @@ class Auth:
         access_token: str | None = None,
         token_validity: str | None = None,
         user_number: str | None = None,
+        auth_mode: str = AUTH_MODE_OAUTH,
     ) -> None:
         """Initialize ThinQ authentication object."""
         self._gateway: Gateway = gateway
@@ -922,6 +1285,7 @@ class Auth:
             int(token_validity) if token_validity else DEFAULT_TOKEN_VALIDITY
         )
         self.user_number = user_number
+        self.auth_mode = auth_mode
         self._token_created_on = (
             datetime.now(timezone.utc) if access_token else datetime.min
         )
@@ -1015,6 +1379,23 @@ class Auth:
 
         return result
 
+    @staticmethod
+    async def oauth_info_from_web_user_login(
+        username: str, password: str, core: CoreAsync
+    ) -> dict:
+        """Return ThinQ Web authentication info using username and password."""
+        try:
+            result = await core.web_user_login(username, password)
+        except exc.AuthenticationError:
+            raise
+        except Exception as ex:
+            raise exc.AuthenticationError("ThinQ Web user login failed") from ex
+
+        if not result:
+            raise exc.AuthenticationError("ThinQ Web user login failed")
+
+        return result
+
     @classmethod
     async def from_url(cls, gateway: Gateway, url: str) -> Auth | None:
         """Create an authentication using an OAuth callback URL."""
@@ -1070,14 +1451,26 @@ class Auth:
         if get_new_token:
             _LOGGER.debug("Request new access token")
             self.access_token = None
-            access_token, token_validity = await self._gateway.core.refresh_auth(
-                self.refresh_token
-            )
+            if self.auth_mode == AUTH_MODE_WEB:
+                access_token, token_validity = await self._gateway.core.refresh_web_auth(
+                    self.refresh_token
+                )
+            else:
+                access_token, token_validity = await self._gateway.core.refresh_auth(
+                    self.refresh_token
+                )
         else:
             token_validity = str(self.token_validity)
 
         if not self.user_number:
-            self.user_number = await self._gateway.core.get_user_number(access_token)
+            if self.auth_mode == AUTH_MODE_WEB:
+                self.user_number = await self._gateway.core.get_web_user_number(
+                    access_token
+                )
+            else:
+                self.user_number = await self._gateway.core.get_user_number(
+                    access_token
+                )
 
         if not get_new_token:
             return self
@@ -1088,6 +1481,7 @@ class Auth:
             access_token,
             token_validity,
             self.user_number,
+            self.auth_mode,
         )
 
     def refresh_gateway(self, gateway: Gateway) -> None:
@@ -1101,6 +1495,7 @@ class Auth:
             "access_token": self.access_token,
             "expires_in": self.token_validity,
             "user_number": self.user_number,
+            "auth_mode": self.auth_mode,
         }
 
     @classmethod
@@ -1112,6 +1507,7 @@ class Auth:
             data.get("access_token"),
             data.get("expires_in"),
             data["user_number"],
+            data.get("auth_mode", AUTH_MODE_OAUTH),
         )
 
 
@@ -1451,6 +1847,7 @@ class ClientAsync:
         language: str = DEFAULT_LANGUAGE,
         *,
         enable_emulation: bool = False,
+        auth_mode: str = AUTH_MODE_OAUTH,
     ) -> None:
         """Initialize the client."""
         # The three steps required to get access to call the API.
@@ -1472,6 +1869,7 @@ class ClientAsync:
         # Locale information used to discover a gateway, if necessary.
         self._country = country
         self._language = language
+        self._auth_mode = auth_mode
 
         # enable emulation mode for debug / test
         env_emulation = os.environ.get("thinq2_emulation", "") == "ENABLED"
@@ -1563,6 +1961,7 @@ class ClientAsync:
             "refresh_token": self.auth.refresh_token,
             "access_token": self.auth.access_token,
             "user_number": self.auth.user_number,
+            "auth_mode": self.auth.auth_mode,
         }
 
     async def close(self):
@@ -1662,6 +2061,7 @@ class ClientAsync:
         client_id: str | None = None,
         update_clientid_callback: Callable[[str], None] | None = None,
         enable_emulation: bool = False,
+        auth_mode: str = AUTH_MODE_OAUTH,
     ) -> ClientAsync:
         """
         Construct a client using just a refresh token.
@@ -1678,15 +2078,17 @@ class ClientAsync:
             session=aiohttp_session,
             client_id=client_id,
             update_clientid_callback=update_clientid_callback,
+            auth_mode=auth_mode,
         )
         try:
             gateway = await Gateway.discover(core)
-            auth = Auth(gateway, refresh_token)
+            auth = Auth(gateway, refresh_token, auth_mode=auth_mode)
             client = cls(
                 auth=auth,
                 country=country,
                 language=language,
                 enable_emulation=enable_emulation,
+                auth_mode=auth_mode,
             )
             await client.refresh()
         except Exception:  # pylint: disable=broad-except
@@ -1736,12 +2138,25 @@ class ClientAsync:
         language: str = DEFAULT_LANGUAGE,
         *,
         aiohttp_session: aiohttp.ClientSession | None = None,
+        auth_mode: str = AUTH_MODE_OAUTH,
     ) -> dict:
         """Return authentication info from an OAuth callback URL."""
-        core = CoreAsync(country, language, session=aiohttp_session)
+        core = CoreAsync(
+            country,
+            language,
+            session=aiohttp_session,
+            auth_mode=auth_mode,
+        )
         try:
-            gateway = await Gateway.discover(core)
-            result = await Auth.oauth_info_from_user_login(username, password, gateway)
+            if auth_mode == AUTH_MODE_WEB:
+                result = await Auth.oauth_info_from_web_user_login(
+                    username, password, core
+                )
+            else:
+                gateway = await Gateway.discover(core)
+                result = await Auth.oauth_info_from_user_login(
+                    username, password, gateway
+                )
         finally:
             await core.close()
 
