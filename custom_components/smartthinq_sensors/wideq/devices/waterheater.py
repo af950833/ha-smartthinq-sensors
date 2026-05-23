@@ -6,7 +6,7 @@ from enum import Enum
 
 from ..backports.functools import cached_property
 from ..const import TemperatureUnit, WaterHeaterFeatures
-from ..core_async import ClientAsync
+from ..core_async import AUTH_MODE_WEB, ClientAsync
 from ..core_exceptions import InvalidRequestError
 from ..core_util import TempUnitConversion
 from ..device import Device, DeviceStatus
@@ -186,6 +186,8 @@ class WaterHeaterDevice(Device):
 
     async def _pre_update_v2(self):
         """Call additional methods before data update for v2 API."""
+        if self._client.auth.auth_mode == AUTH_MODE_WEB:
+            return
         # this command is to get power and temp info on V2 device
         keys = self._get_cmd_keys(CMD_ENABLE_EVENT_V2)
         await self.set(keys[0], keys[1], key=keys[2], value="70", ctrl_path="control")
