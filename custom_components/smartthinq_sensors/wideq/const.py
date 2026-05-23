@@ -3,8 +3,8 @@
 from .backports.enum import StrEnum
 
 # default core settings
-DEFAULT_COUNTRY = "US"
-DEFAULT_LANGUAGE = "en-US"
+DEFAULT_COUNTRY = "KR"
+DEFAULT_LANGUAGE = "ko-KR"
 DEFAULT_TIMEOUT = 15  # seconds
 
 # bit status
