@@ -22,7 +22,6 @@ from homeassistant.const import (
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
     async_dispatcher_send,
@@ -33,11 +32,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
     CLIENT,
-    CONF_AUTH_MODE,
     CONF_LANGUAGE,
-    CONF_OAUTH2_URL,
     CONF_USE_API_V2,
-    CONF_USE_HA_SESSION,
     DOMAIN,
     LGE_DEVICES,
     LGE_DISCOVERY_NEW,
@@ -53,13 +49,14 @@ from .wideq import (
     WM_DEVICE_TYPES,
     get_lge_device,
 )
-from .wideq.core_async import AUTH_MODE_OAUTH, ClientAsync
+from .wideq.core_async import ClientAsync
 from .wideq.core_exceptions import (
     AuthenticationError,
     InvalidCredentialError,
     MonitorRefreshError,
     MonitorUnavailableError,
     NotConnectedError,
+    TokenError,
 )
 from .wideq.device import Device as ThinQDevice
 
@@ -82,6 +79,7 @@ MAX_AUTH_RETRY = 4
 MAX_DISC_COUNT = 4
 KEEP_STATE_ON_REFRESH_ERROR_TYPES = (DeviceType.REFRIGERATOR, *WM_DEVICE_TYPES)
 SIGNAL_RELOAD_ENTRY = f"{DOMAIN}_reload_entry"
+LEGACY_CONF_USE_HA_SESSION = "use_ha_session"
 
 DISCOVERED_DEVICES = "discovered_devices"
 UNSUPPORTED_DEVICES = "unsupported_devices"
@@ -93,77 +91,40 @@ _LOGGER = logging.getLogger(__name__)
 class LGEAuthentication:
     """Class to authenticate connection with LG ThinQ."""
 
-    def __init__(
-        self, hass: HomeAssistant, region: str, language: str, use_ha_session=False
-    ) -> None:
+    def __init__(self, region: str, language: str) -> None:
         """Initialize the class."""
         self._region = region
         self._language = language
-        self._client_session = None
-        if use_ha_session:
-            self._client_session = async_get_clientsession(hass)
 
-    async def get_login_url(self) -> str | None:
-        """Get an url to login in browser."""
-        try:
-            return await ClientAsync.get_login_url(
-                self._region, self._language, aiohttp_session=self._client_session
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.exception("Error retrieving login URL from ThinQ", exc_info=exc)
-
-        return None
-
-    async def get_oauth_info_from_url(self, callback_url: str) -> dict[str, str] | None:
-        """Retrieve oauth info from redirect url."""
-        try:
-            return await ClientAsync.oauth_info_from_url(
-                callback_url,
-                self._region,
-                self._language,
-                aiohttp_session=self._client_session,
-            )
-        except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.exception("Error retrieving OAuth info from ThinQ", exc_info=exc)
-
-        return None
-
-    async def get_oauth_info_from_login(
-        self, username: str, password: str, auth_mode: str = AUTH_MODE_OAUTH
+    async def get_auth_info_from_login(
+        self, username: str, password: str
     ) -> dict[str, str] | None:
-        """Retrieve oauth info from user login credential."""
+        """Retrieve ThinQ Web auth info from user login credential."""
         try:
-            return await ClientAsync.oauth_info_from_user_login(
+            return await ClientAsync.auth_info_from_user_login(
                 username,
                 password,
                 self._region,
                 self._language,
-                aiohttp_session=self._client_session,
-                auth_mode=auth_mode,
             )
         except Exception as exc:  # pylint: disable=broad-except
-            _LOGGER.exception("Error retrieving OAuth info from ThinQ", exc_info=exc)
+            _LOGGER.exception("Error retrieving ThinQ Web auth info", exc_info=exc)
 
         return None
 
     async def create_client_from_token(
         self,
         token: str,
-        oauth_url: str | None = None,
         client_id: str | None = None,
         update_clientid_callback: Callable[[str], None] | None = None,
-        auth_mode: str = AUTH_MODE_OAUTH,
     ) -> ClientAsync:
         """Create a new client using refresh token."""
         return await ClientAsync.from_token(
             token,
             country=self._region,
             language=self._language,
-            oauth_url=oauth_url,
-            aiohttp_session=self._client_session,
             client_id=client_id,
             update_clientid_callback=update_clientid_callback,
-            auth_mode=auth_mode,
         )
 
 
@@ -188,20 +149,6 @@ def _notify_message(
     )
 
 
-@callback
-def _migrate_old_config_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Migrate an old config entry if available."""
-    old_key = "outh_url"  # old conf key with typo error
-    if old_key not in entry.data:
-        return
-
-    oauth2_url = entry.data[old_key]
-    new_data = {k: v for k, v in entry.data.items() if k != old_key}
-    hass.config_entries.async_update_entry(
-        entry, data={**new_data, CONF_OAUTH2_URL: oauth2_url}
-    )
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up SmartThinQ integration from a config entry."""
 
@@ -215,15 +162,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.warning(msg)
         return False
 
-    _migrate_old_config_entry(hass, entry)
     region = entry.data[CONF_REGION]
     language = entry.data[CONF_LANGUAGE]
     refresh_token = entry.data[CONF_TOKEN]
-    oauth2_url = None  # entry.data.get(CONF_OAUTH2_URL)
     client_id: str | None = entry.data.get(CONF_CLIENT_ID)
     use_api_v2 = entry.data.get(CONF_USE_API_V2, False)
-    use_ha_session = entry.data.get(CONF_USE_HA_SESSION, False)
-    auth_mode = entry.data.get(CONF_AUTH_MODE, AUTH_MODE_OAUTH)
+    entry_data = {
+        key: value
+        for key, value in entry.data.items()
+        if key != LEGACY_CONF_USE_HA_SESSION
+    }
+    if entry_data != entry.data:
+        hass.config_entries.async_update_entry(entry, data=entry_data)
 
     if not use_api_v2:
         _LOGGER.warning(
@@ -250,21 +200,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def _update_clientid_callback(client_id: str) -> None:
         """Update config entry with the new client id."""
         hass.config_entries.async_update_entry(
-            entry, data={**entry.data, CONF_CLIENT_ID: client_id}
+            entry, data={**entry_data, CONF_CLIENT_ID: client_id}
         )
 
     # if network is not connected we can have some error
     # raising ConfigEntryNotReady platform setup will be retried
-    lge_auth = LGEAuthentication(hass, region, language, use_ha_session)
+    lge_auth = LGEAuthentication(region, language)
     try:
         client = await lge_auth.create_client_from_token(
             refresh_token,
-            oauth2_url,
             client_id,
             _update_clientid_callback,
-            auth_mode,
         )
-    except (AuthenticationError, InvalidCredentialError) as exc:
+    except (AuthenticationError, InvalidCredentialError, TokenError) as exc:
         if (auth_retry := hass.data[DOMAIN].get(AUTH_RETRY, 0)) >= MAX_AUTH_RETRY:
             hass.data.pop(DOMAIN)
             # Launch config entries reauth setup
