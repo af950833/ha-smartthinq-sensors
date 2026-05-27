@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from enum import Enum
 import logging
 
@@ -16,37 +18,49 @@ from ..model_info import TYPE_RANGE
 
 AWHP_MODEL_TYPE = ["AWHP", "SAC_AWHP"]
 
-SUPPORT_AIR_POLUTION = ["SupportAirPolution", "support.airPolution"]
-SUPPORT_OPERATION_MODE = ["SupportOpMode", "support.airState.opMode"]
-SUPPORT_WIND_STRENGTH = ["SupportWindStrength", "airState.windStrength"]
-SUPPORT_WIND_DIR = ["SupportWindDir", "support.airState.wDir"]
-SUPPORT_DUCT_ZONE = ["SupportDuctZoneType", "support.airState.ductZone.type"]
-SUPPORT_LIGHT = ["SupportLight", "support.light"]
-SUPPORT_PAC_MODE = ["SupportPACMode", "support.pacMode"]
-SUPPORT_RAC_MODE = ["SupportRACMode", "support.racMode"]
-SUPPORT_RAC_SUBMODE = ["SupportRACSubMode", "support.racSubMode"]
+AC_CONTROL_COMMAND_DELAY = 1.0
 
-SUPPORT_VANE_HSTEP = [SUPPORT_WIND_DIR, "@AC_MAIN_WIND_DIRECTION_LEFT_RIGHT_W"]
-SUPPORT_VANE_VSTEP = [SUPPORT_WIND_DIR, "@AC_MAIN_WIND_DIRECTION_UP_DOWN_W"]
-SUPPORT_VANE_HSWING = [
-    SUPPORT_WIND_DIR,
-    "@AC_MAIN_WIND_DIRECTION_LEFT_RIGHT_W",
-]
-SUPPORT_VANE_VSWING = [SUPPORT_WIND_DIR, "@AC_MAIN_WIND_DIRECTION_UP_DOWN_W"]
-SUPPORT_JET_COOL = [SUPPORT_RAC_SUBMODE, "@AC_MAIN_WIND_MODE_COOL_JET_W"]
-SUPPORT_JET_HEAT = [SUPPORT_RAC_SUBMODE, "@AC_MAIN_WIND_MODE_HEAT_JET_W"]
-SUPPORT_AIRCLEAN = [SUPPORT_PAC_MODE, "@AIRCLEAN"]
-SUPPORT_AUTODRY = [SUPPORT_PAC_MODE, "@AUTODRY"]
-SUPPORT_POWERSAVE = [SUPPORT_PAC_MODE, "@ENERGYSAVING"]
-SUPPORT_HOT_WATER = [SUPPORT_PAC_MODE, ["@HOTWATER", "@HOTWATER_ONLY"]]
-SUPPORT_LIGHT_SWITCH = [SUPPORT_LIGHT, "@RAC_88_DISPLAY_CONTROL"]
-SUPPORT_LIGHT_INV_SWITCH = [SUPPORT_LIGHT, "@BRIGHTNESS_CONTROL"]
-SUPPORT_PM = [
-    SUPPORT_AIR_POLUTION,
-    ["@PM1_0_SUPPORT", "@PM2_5_SUPPORT", "@PM10_SUPPORT"],
-]
+WIND_MODE_OFF = "설정 안 함"
+DISCOVERED_FEATURE_LABELS = {
+    "airClean": "공기청정",
+    "iceValley": "아이스 쿨파워",
+    "flowLongPower": "아이스 롱파워",
+    "smartCare": "스마트",
+}
+WIND_MODE_TOKENS = {
+    "iceValley": ("ICEVALLEY",),
+    "flowLongPower": ("LONGPOWER", "FLOW_LONG_POWER"),
+}
+OP_MODE_TOKENS = {
+    "COOL": ("COOL",),
+    "DRY": ("DRY",),
+    "FAN": ("FAN",),
+    "HEAT": ("HEAT",),
+    "ACO": ("ACO",),
+    "AI": ("AI",),
+    "AIRCLEAN": ("AIRCLEAN", "AIR_CLEAN"),
+    "AROMA": ("AROMA",),
+    "ENERGY_SAVING": ("ENERGY_SAVING", "ENERGYSAVING"),
+    "ENERGY_SAVER": ("ENERGY_SAVER", "ENERGYSAVER"),
+}
+WIND_MODE_SELECT_EXCLUDED = {
+    "airClean",
+    "jet",
+    "smartCare",
+}
+
+
+@dataclass(frozen=True)
+class DiscoveredEnumControl:
+    """ThinQ enum state paired with its model-advertised control path."""
+
+    key: str
+    ctrl_key: str
+    use_dataset: bool
+    options: dict
 
 CTRL_BASIC = ["Control", "basicCtrl"]
+CTRL_WIND_MODE = ["Control", "wModeCtrl"]
 CTRL_WIND_DIRECTION = ["Control", "wDirCtrl"]
 CTRL_MISC = ["Control", "miscCtrl"]
 
@@ -65,15 +79,12 @@ STATE_OPERATION_MODE = ["OpMode", "airState.opMode"]
 STATE_CURRENT_TEMP = ["TempCur", "airState.tempState.current"]
 STATE_TARGET_TEMP = ["TempCfg", "airState.tempState.target"]
 STATE_WIND_STRENGTH = ["WindStrength", "airState.windStrength"]
-STATE_WDIR_HSTEP = ["WDirHStep", "airState.wDir.hStep"]
-STATE_WDIR_VSTEP = ["WDirVStep", "airState.wDir.vStep"]
 STATE_WDIR_HSWING = ["WDirLeftRight", "airState.wDir.leftRight"]
 STATE_WDIR_VSWING = ["WDirUpDown", "airState.wDir.upDown"]
 STATE_DUCT_ZONE = ["ZoneControl", "airState.ductZone.state"]
 STATE_POWER = [STATE_POWER_V1, "airState.energy.onCurrent"]
 STATE_HUMIDITY = ["SensorHumidity", "airState.humidity.current"]
 STATE_MODE_AIRCLEAN = ["AirClean", "airState.wMode.airClean"]
-STATE_ICEVALLEY = ["IceValley","airState.wMode.iceValley"]
 STATE_SMARTCARE = ["SmartCare","airState.wMode.smartCare"]
 STATE_POWERSAVE = ["PowerSave","airState.powerSave.basic"]
 STATE_AUTODRY = ["AutoDry","airState.miscFuncState.autoDry"]
@@ -101,15 +112,10 @@ FILTER_TYPES = [
 CMD_STATE_OPERATION = [CTRL_BASIC, "Set", STATE_OPERATION]
 CMD_STATE_OP_MODE = [CTRL_BASIC, "Set", STATE_OPERATION_MODE]
 CMD_STATE_TARGET_TEMP = [CTRL_BASIC, "Set", STATE_TARGET_TEMP]
-CMD_STATE_WIND_STRENGTH = [CTRL_BASIC, "Set", STATE_WIND_STRENGTH]
-CMD_STATE_WDIR_HSTEP = [CTRL_WIND_DIRECTION, "Set", STATE_WDIR_HSTEP]
-CMD_STATE_WDIR_VSTEP = [CTRL_WIND_DIRECTION, "Set", STATE_WDIR_VSTEP]
 CMD_STATE_WDIR_HSWING = [CTRL_WIND_DIRECTION, "Set", STATE_WDIR_HSWING]
 CMD_STATE_WDIR_VSWING = [CTRL_WIND_DIRECTION, "Set", STATE_WDIR_VSWING]
 CMD_STATE_DUCT_ZONES = [CTRL_MISC, "Set", [DUCT_ZONE_V1, "airState.ductZone.control"]]
 CMD_STATE_MODE_AIRCLEAN = [CTRL_BASIC, "Set", STATE_MODE_AIRCLEAN]
-CMD_STATE_ICEVALLEY = [CTRL_BASIC, "Set", STATE_ICEVALLEY]
-CMD_STATE_SMARTCARE = [CTRL_BASIC, "Set", STATE_SMARTCARE]
 CMD_STATE_POWERSAVE = [CTRL_BASIC, "Set", STATE_POWERSAVE]
 CMD_STATE_AUTODRY = [CTRL_BASIC, "Set", STATE_AUTODRY]
 CMD_STATE_MODE_JET = [CTRL_BASIC, "Set", STATE_MODE_JET]
@@ -195,37 +201,6 @@ class ACMode(Enum):
     ENERGY_SAVER = "@AC_MAIN_OPERATION_MODE_ENERGY_SAVER_W"
 
 
-class ACFanSpeed(Enum):
-    """The fan speed for an AC/HVAC device."""
-
-    약풍 = '@AC_MAIN_WIND_STRENGTH_LOW_LEFT_W|AC_MAIN_WIND_STRENGTH_LOW_RIGHT_W'
-    중풍 = '@AC_MAIN_WIND_STRENGTH_MID_LEFT_W|AC_MAIN_WIND_STRENGTH_MID_RIGHT_W'
-    강풍 = '@AC_MAIN_WIND_STRENGTH_HIGH_LEFT_W|AC_MAIN_WIND_STRENGTH_HIGH_RIGHT_W'
-    쿨파워 = '@AC_MAIN_WIND_STRENGTH_POWER_LEFT_W|AC_MAIN_WIND_STRENGTH_POWER_RIGHT_W'
-    롱파워 = '@AC_MAIN_WIND_STRENGTH_LONGPOWER_LEFT_W|AC_MAIN_WIND_STRENGTH_LONGPOWER_RIGHT_W'
-    스마트 = '@AC_MAIN_WIND_STRENGTH_AUTO_LEFT_W|AC_MAIN_WIND_STRENGTH_AUTO_RIGHT_W'
-
-
-class ACVStepMode(Enum):
-    """
-    The vertical step mode for an AC/HVAC device.
-
-    Blades are numbered vertically from 1 (topmost)
-    to 6.
-
-    All is 100.
-    """
-    
-    Off = "@OFF"
-    Top = "@1"
-    MiddleTop1 = "@2"
-    MiddleTop2 = "@3"
-    MiddleBottom2 = "@4"
-    MiddleBottom1 = "@5"
-    Bottom = "@6"
-    Swing = "@100"
-
-
 class ACVSwingMode(Enum):
     """The swing mode for an AC/HVAC device."""
 
@@ -240,27 +215,6 @@ class ACHSwingMode(Enum):
     좌측 = "@LEFT_ON"
     우측 = "@RIGHT_ON"
     좌우 = "@ALL_ON"
-
-class ACHStepMode(Enum):
-    """
-    The horizontal step mode for an AC/HVAC device.
-    Blades are numbered horizontally from 1 (leftmost)
-    to 5.
-    Left half goes from 1-3, and right half goes from
-    3-5.
-    All is 100.
-    """
-
-    Off = "@OFF"
-    Left = "@1"
-    MiddleLeft = "@2"
-    Center = "@3"
-    MiddleRight = "@4"
-    Right = "@5"
-    LeftHalf = "@13"
-    RightHalf = "@35"
-    Swing = "@100"
-
 
 class JetMode(Enum):
     """Possible JET modes."""
@@ -308,6 +262,7 @@ class AirConditionerDevice(Device):
         self._filter_status_supported = True
 
         self._unit_conv = TempUnitConversion()
+        self._control_lock = asyncio.Lock()
 
     def _f2c(self, value):
         """Convert Fahrenheit to Celsius temperatures for this device if required."""
@@ -329,15 +284,312 @@ class AirConditionerDevice(Device):
         if int(target_temp) != target_temp:
             self._temperature_step = TEMP_STEP_HALF
 
-    def _is_mode_supported(self, key):
-        """Check if a specific mode for support key is supported."""
-        if not isinstance(key, list):
-            return False
+    def _resolve_key(self, key_name) -> str:
+        """Resolve a legacy key pair or a direct model key to a model data key."""
+        if isinstance(key_name, list):
+            return self._get_state_key(key_name)
+        return key_name
 
-        supp_key = self._get_state_key(key[0])
-        if isinstance(key[1], list):
-            return [self.model_info.enum_value(supp_key, k) is not None for k in key[1]]
-        return self.model_info.enum_value(supp_key, key[1]) is not None
+    @cached_property
+    def _model_value_keys(self) -> list[str]:
+        """Return model keys that can be inspected for dynamic controls."""
+        model_data = self.model_info.as_dict()
+        keys = []
+        for section in ("Value", "MonitoringValue"):
+            values = model_data.get(section)
+            if isinstance(values, dict):
+                keys.extend(values)
+        return keys
+
+    def _support_options(self, *tokens: str) -> list[str]:
+        """Return model support enum labels whose keys match all tokens."""
+        matches = []
+        token_set = [token.lower() for token in tokens]
+        for key in self._model_value_keys:
+            key_l = key.lower()
+            if not key_l.startswith("support") and ".support" not in key_l:
+                continue
+            if not all(token in key_l for token in token_set):
+                continue
+            matches.extend(self._enum_options(key).values())
+        return matches
+
+    @staticmethod
+    def _support_token_match(option: str, token: str) -> bool:
+        """Return if a support option contains a token as a distinct LG token."""
+        option_text = f"_{str(option).strip('@').upper()}_"
+        token_text = token.strip("@").upper()
+        if f"_{token_text}_" in option_text:
+            return True
+        if "_" in token_text:
+            return all(f"_{part}_" in option_text for part in token_text.split("_"))
+        return False
+
+    @classmethod
+    def _support_matches(cls, options: list[str], *tokens: str) -> bool | None:
+        """Return support match, or None when no support list exists."""
+        if not options:
+            return None
+        return any(
+            any(cls._support_token_match(option, token) for token in tokens)
+            for option in options
+        )
+
+    def _supported_or_unknown(self, support_tokens: tuple[str, ...], *value_tokens: str) -> bool:
+        """Return True when support is advertised or no support list exists."""
+        supported = self._support_matches(
+            self._support_options(*support_tokens), *value_tokens
+        )
+        return True if supported is None else supported
+
+    def _enum_options(self, key_name) -> dict:
+        """Return enum options for a model key."""
+        key = self._resolve_key(key_name)
+        if not self.model_info.is_enum_type(key):
+            return {}
+        value = self.model_info.value(key)
+        return value.options if value else {}
+
+    def _discover_enum_control(
+        self, key_name, fallback_ctrl: str = "basicCtrl"
+    ) -> DiscoveredEnumControl | None:
+        """Discover an enum state and the control key that can set it."""
+        key = self._resolve_key(key_name)
+        options = self._enum_options(key)
+        if not options:
+            return None
+        ctrl_key, use_dataset = self._control_for_key(key, fallback_ctrl)
+        return DiscoveredEnumControl(key, ctrl_key, use_dataset, options)
+
+    @staticmethod
+    def _discovered_feature_label(key: str) -> str:
+        """Return a user-facing label for a discovered feature key."""
+        name = key.rsplit(".", 1)[-1]
+        if name in DISCOVERED_FEATURE_LABELS:
+            return DISCOVERED_FEATURE_LABELS[name]
+        label = []
+        for char in name:
+            if char.isupper() and label:
+                label.append(" ")
+            label.append(char)
+        return "".join(label).replace("_", " ").title()
+
+    @cached_property
+    def _wind_strength_key(self) -> str | None:
+        """Return the model key that represents fan wind strength."""
+        for key_name in (STATE_WIND_STRENGTH, "airState.windStrength"):
+            key = self._resolve_key(key_name)
+            if self._enum_options(key):
+                return key
+        for key in self._model_value_keys:
+            if key.endswith("windStrength") and self._enum_options(key):
+                return key
+        return None
+
+    @cached_property
+    def _wind_mode_map(self) -> dict[str, str]:
+        """Return selectable special wind modes discovered from model data."""
+        modes = {}
+        support_options = self._support_options("wmode")
+        for key in self._model_value_keys:
+            if ".wMode." not in key:
+                continue
+            name = key.rsplit(".", 1)[-1]
+            if name in WIND_MODE_SELECT_EXCLUDED:
+                continue
+            support_tokens = WIND_MODE_TOKENS.get(name, (name.upper(),))
+            supported = self._support_matches(support_options, *support_tokens)
+            if supported is False:
+                continue
+            if self.model_info.enum_value(key, MODE_ON) is None:
+                continue
+            if self.model_info.enum_value(key, MODE_OFF) is None:
+                continue
+            modes[self._discovered_feature_label(key)] = key
+        return dict(sorted(modes.items()))
+
+    @staticmethod
+    def _contains_token(value: str, token: str) -> bool:
+        """Return if an LG enum string contains a full token."""
+        return f"_{token}_" in value or value.endswith(f"_{token}_W")
+
+    @staticmethod
+    def _fan_label_from_enum(value: str) -> str | None:
+        """Translate LG wind strength enum text to a HA fan label."""
+        if not value:
+            return None
+        if any(token in value for token in ("SLOW", "AUTO", "POWER", "LONGPOWER")):
+            return None
+        if "LOW_MID" in value or "MID_HIGH" in value:
+            return None
+        if AirConditionerDevice._contains_token(value, "LOW"):
+            return "약풍"
+        if AirConditionerDevice._contains_token(value, "MID"):
+            return "중풍"
+        if AirConditionerDevice._contains_token(value, "HIGH"):
+            return "강풍"
+        return None
+
+    @staticmethod
+    def _fan_value_priority(value: str) -> int:
+        """Prefer whole-unit or same left/right values over partial variants."""
+        if "|" in value and "LEFT" in value and "RIGHT" in value:
+            return 40
+        if "CLEAN" in value:
+            return 5
+        if "LEFT" not in value and "RIGHT" not in value:
+            return 30
+        return 10
+
+    @cached_property
+    def _fan_speed_map(self) -> dict[str, str]:
+        """Return HA fan labels mapped to encoded LG wind strength values."""
+        if not self._wind_strength_key:
+            return {}
+        candidates: dict[str, tuple[int, str]] = {}
+        for encoded, enum_value in self._enum_options(self._wind_strength_key).items():
+            if not (label := self._fan_label_from_enum(enum_value)):
+                continue
+            priority = self._fan_value_priority(enum_value)
+            if priority > candidates.get(label, (-1, ""))[0]:
+                candidates[label] = (priority, encoded)
+        ordered = ["약풍", "중풍", "강풍"]
+        return {
+            label: candidates[label][1]
+            for label in ordered
+            if label in candidates
+        }
+
+    @cached_property
+    def _dual_fan_speed_map(self) -> dict[tuple[str, str], str]:
+        """Return left/right fan label pairs mapped to encoded wind strength values."""
+        if not self._wind_strength_key:
+            return {}
+        pairs = {}
+        for encoded, enum_value in self._enum_options(self._wind_strength_key).items():
+            if "|" not in enum_value:
+                continue
+            parts = enum_value.split("|", 1)
+            if len(parts) != 2:
+                continue
+            left = self._fan_label_from_enum(parts[0])
+            right = self._fan_label_from_enum(parts[1])
+            if left and right:
+                pairs[(left, right)] = encoded
+        return pairs
+
+    def _control_for_key(self, state_key: str, fallback_ctrl: str = "basicCtrl") -> tuple[str, bool]:
+        """Find the ThinQ control key and payload shape for a state key."""
+        controls = self.model_info.as_dict().get("ControlDevice", [])
+        if isinstance(controls, dict):
+            controls = controls.values()
+        for control in controls:
+            if not isinstance(control, dict):
+                continue
+            ctrl_key = control.get("ctrlKey")
+            if not ctrl_key:
+                continue
+            data_set = control.get("dataSetList")
+            if isinstance(data_set, dict) and state_key in data_set:
+                return ctrl_key, True
+            data_key = control.get("dataKey", "")
+            if isinstance(data_key, str) and state_key in data_key.split("|"):
+                return ctrl_key, False
+        return fallback_ctrl, False
+
+    def _is_wind_mode_state_supported(self, state_key) -> bool:
+        """Return if a wind mode state exists and can be toggled."""
+        key = self._resolve_key(state_key)
+        if not self.model_info.value_exist(key):
+            return False
+        name = key.rsplit(".", 1)[-1]
+        if ".wMode." in key:
+            support_tokens = WIND_MODE_TOKENS.get(name, (name.upper(),))
+            supported = self._support_matches(
+                self._support_options("wmode"), *support_tokens
+            )
+            if supported is False:
+                return False
+        elif name == "basic":
+            if not self._supported_or_unknown(("pacmode",), "ENERGYSAVING"):
+                return False
+        elif name == "autoDry":
+            if not self._supported_or_unknown(("pacmode",), "AUTODRY"):
+                return False
+        return (
+            self.model_info.enum_value(key, MODE_ON) is not None
+            and self.model_info.enum_value(key, MODE_OFF) is not None
+        )
+
+    def _current_data_value(self, data_key: str):
+        """Return current raw data value for multi-key control payloads."""
+        status = self._status.as_dict if self._status else {}
+        value = status.get(data_key)
+        if value is None:
+            value = self.model_info.default(data_key)
+        if value is None and self.model_info.is_enum_type(data_key):
+            value = self.model_info.enum_value(data_key, MODE_OFF)
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        if isinstance(value, str):
+            try:
+                num_value = float(value)
+            except ValueError:
+                return value
+            if num_value.is_integer():
+                return str(int(num_value))
+        return "0" if value is None else str(value)
+
+    async def _set_enum_value(
+        self, state_key, value: str, fallback_ctrl: str = "basicCtrl"
+    ):
+        """Set an encoded enum value using the model's advertised control shape."""
+        control = self._discover_enum_control(state_key, fallback_ctrl)
+        if control is None:
+            raise ValueError(f"Unsupported enum control for {state_key}")
+        key = control.key
+        ctrl_key = control.ctrl_key
+        use_dataset = control.use_dataset
+        if not use_dataset:
+            await self.set(ctrl_key, "Set", key=key, value=value)
+            return
+
+        payload = {"ctrlKey": ctrl_key, "command": "Set", "dataSetList": {}}
+        if ctrl_key == "wModeCtrl":
+            payload["dataSetList"][key] = value
+            await self.set(payload, None, key=key, value=value)
+            return
+
+        controls = self.model_info.as_dict().get("ControlDevice", [])
+        if isinstance(controls, dict):
+            controls = controls.values()
+        data_keys = []
+        for control in controls:
+            if isinstance(control, dict) and control.get("ctrlKey") == ctrl_key:
+                data_set = control.get("dataSetList")
+                if isinstance(data_set, dict):
+                    data_keys = list(data_set)
+                    break
+        for data_key in data_keys:
+            if self.model_info.is_enum_type(data_key):
+                if ctrl_key == "wModeCtrl":
+                    payload["dataSetList"][data_key] = (
+                        self.model_info.enum_value(data_key, MODE_OFF) or "0"
+                    )
+                else:
+                    payload["dataSetList"][data_key] = self._current_data_value(data_key)
+        payload["dataSetList"][key] = value
+        await self.set(payload, None, key=key, value=value)
+
+    async def _set_enum_state(
+        self, state_key, enum_name: str, fallback_ctrl: str = "basicCtrl"
+    ):
+        """Set an enum state using the model's advertised control shape."""
+        key = self._resolve_key(state_key)
+        value = self.model_info.enum_value(key, enum_name)
+        if value is None:
+            raise ValueError(f"Unsupported enum value for {key}: {enum_name}")
+        await self._set_enum_value(key, value, fallback_ctrl)
 
     def _get_supported_operations(self):
         """Return the list of the ACOp Operations the device supports."""
@@ -417,12 +669,10 @@ class AirConditionerDevice(Device):
     @cached_property
     def is_duct_zones_supported(self):
         """Check if device support duct zones."""
-        supp_key = self._get_state_key(SUPPORT_DUCT_ZONE)
-        if not self.model_info.is_enum_type(supp_key):
-            return False
-        mapping = self.model_info.value(supp_key).options
-        zones = [key for key in mapping.keys() if key != "0"]
-        return len(zones) > 0
+        return self.model_info.value_exist(self._get_state_key(STATE_DUCT_ZONE)) or (
+            not self.model_info.is_info_v2
+            and self.model_info.value_exist(DUCT_ZONE_V1_TYPE)
+        )
 
     def is_duct_zone_enabled(self, zone: str) -> bool:
         """Get if a specific zone is enabled"""
@@ -543,43 +793,60 @@ class AirConditionerDevice(Device):
         """Return if Water Heater is supported."""
         if not self.is_air_to_water:
             return False
-        return any(self._is_mode_supported(SUPPORT_HOT_WATER))
+        return self.model_info.value_exist(self._get_state_key(STATE_HOT_WATER_MODE)) or (
+            self.model_info.value_exist(self._get_state_key(STATE_HOT_WATER_TARGET_TEMP))
+        )
 
     @cached_property
     def op_modes(self):
         """Return a list of available operation modes."""
-        return self._get_property_values(SUPPORT_OPERATION_MODE, ACMode)
+        modes = self._get_property_values(STATE_OPERATION_MODE, ACMode)
+        support_options = self._support_options("opmode")
+        if not support_options:
+            return modes
+        return [
+            mode
+            for mode in modes
+            if self._support_matches(
+                support_options, *OP_MODE_TOKENS.get(mode, (mode,))
+            )
+        ]
 
     @cached_property
     def fan_speeds(self):
-        """Return a list of available fan speeds."""
-        return self._get_property_values(SUPPORT_WIND_STRENGTH, ACFanSpeed)
+        """Return fan speed and special wind mode options."""
+        return [*self._fan_speed_map, *self._wind_mode_map]
 
     @cached_property
-    def horizontal_step_modes(self):
-        """Return a list of available horizontal step modes."""
-        if not self._is_mode_supported(SUPPORT_VANE_HSTEP):
+    def dual_fan_speed_options(self):
+        """Return dual fan speed options when the model exposes left/right fan pairs."""
+        if not self._dual_fan_speed_map:
             return []
-        return self._get_property_values(STATE_WDIR_HSTEP, ACHStepMode)
+        return [speed for speed in ("약풍", "중풍", "강풍") if speed in self.fan_speeds]
+
+    @cached_property
+    def wind_modes(self):
+        """Return special wind modes exposed as a select."""
+        if not self._wind_mode_map:
+            return []
+        return [WIND_MODE_OFF, *self._wind_mode_map]
+
+    @cached_property
+    def is_smartcare_supported(self):
+        """Return if SmartCare is available."""
+        return self._is_wind_mode_state_supported(STATE_SMARTCARE)
 
     @cached_property
     def horizontal_swing_modes(self):
         """Return a list of available horizontal swing modes."""
-        if not self._is_mode_supported(SUPPORT_VANE_HSWING):
+        if not self._supported_or_unknown(("wdir",), "LEFT_RIGHT"):
             return []
         return self._get_property_values(STATE_WDIR_HSWING, ACHSwingMode)
 
     @cached_property
-    def vertical_step_modes(self):
-        """Return a list of available vertical step modes."""
-        if not self._is_mode_supported(SUPPORT_VANE_VSTEP):
-            return []
-        return self._get_property_values(STATE_WDIR_VSTEP, ACVStepMode)
-
-    @cached_property
     def vertical_swing_modes(self):
         """Return a list of available vertical swing modes."""
-        if not self._is_mode_supported(SUPPORT_VANE_VSWING):
+        if not self._supported_or_unknown(("wdir",), "UP_DOWN"):
             return []
         return self._get_property_values(STATE_WDIR_VSWING, ACVSwingMode)
 
@@ -608,29 +875,43 @@ class AirConditionerDevice(Device):
     @cached_property
     def is_mode_airclean_supported(self):
         """Return if AirClean mode is supported."""
-        return self._is_mode_supported(SUPPORT_AIRCLEAN)
+        if not self._supported_or_unknown(("pacmode",), "AIRCLEAN"):
+            return False
+        return self._is_wind_mode_state_supported(STATE_MODE_AIRCLEAN)
 
     @cached_property
     def is_powersave_supported(self):
         """Return if PowerSave mode is supported."""
-        return self._is_mode_supported(SUPPORT_POWERSAVE)
+        return self._is_wind_mode_state_supported(STATE_POWERSAVE)
 
     @cached_property
     def is_autodry_supported(self):
         """Return if AutoDry mode is supported."""
-        return self._is_mode_supported(SUPPORT_AUTODRY)
+        return self._is_wind_mode_state_supported(STATE_AUTODRY)
 
     @cached_property
     def supported_mode_jet(self):
         """Return if Jet mode is supported."""
-        supported = JetModeSupport.NONE
-        if self._is_mode_supported(SUPPORT_JET_COOL):
-            supported = JetModeSupport.COOL
-        if self._is_mode_supported(SUPPORT_JET_HEAT):
-            if supported == JetModeSupport.COOL:
-                return JetModeSupport.BOTH
+        options = set(self._enum_options(STATE_MODE_JET).values())
+        support_options = self._support_options("racsubmode")
+        supports_cool = any(
+            mode.value in options
+            for mode in (JetMode.COOL, JetMode.DRY, JetMode.HIMALAYAS)
+        )
+        supports_heat = JetMode.HEAT.value in options
+        support_cool = self._support_matches(support_options, "COOL_JET")
+        support_heat = self._support_matches(support_options, "HEAT_JET")
+        if support_cool is not None:
+            supports_cool = supports_cool and support_cool
+        if support_heat is not None:
+            supports_heat = supports_heat and support_heat
+        if supports_cool and supports_heat:
+            return JetModeSupport.BOTH
+        if supports_cool:
+            return JetModeSupport.COOL
+        if supports_heat:
             return JetModeSupport.HEAT
-        return supported
+        return JetModeSupport.NONE
 
     @property
     def is_mode_jet_available(self):
@@ -653,10 +934,37 @@ class AirConditionerDevice(Device):
             return True
         return False
 
+    @property
+    def is_airclean_incompatible_mode_available(self):
+        """Return if modes that do not apply to Airclean can be controlled."""
+        if not self._status or not self._status.is_on:
+            return False
+        return self._status.operation_mode != ACMode.AIRCLEAN.name
+
+    @property
+    def is_smartcare_available(self):
+        """Return if SmartCare can be controlled in the current mode."""
+        if not self._status or not self._status.is_on:
+            return False
+        return self._status.operation_mode == ACMode.COOL.name
+
     @cached_property
     def _is_pm_supported(self):
         """Return if PM sensors are supported."""
-        return self._is_mode_supported(SUPPORT_PM)
+        support_options = self._support_options("airpolution")
+        if not support_options:
+            support_options = self._support_options("airpollution")
+        support_pm1 = self._support_matches(support_options, "PM1")
+        support_pm25 = self._support_matches(support_options, "PM2_5", "PM25")
+        support_pm10 = self._support_matches(support_options, "PM10")
+        return [
+            self.model_info.value_exist(self._get_state_key(STATE_PM1))
+            and support_pm1 is not False,
+            self.model_info.value_exist(self._get_state_key(STATE_PM25))
+            and support_pm25 is not False,
+            self.model_info.value_exist(self._get_state_key(STATE_PM10))
+            and support_pm10 is not False,
+        ]
 
     @property
     def is_pm1_supported(self):
@@ -708,29 +1016,76 @@ class AirConditionerDevice(Device):
         keys = self._get_cmd_keys(CMD_STATE_OP_MODE)
         mode_value = self.model_info.enum_value(keys[2], ACMode[mode].value)
         await self.set(keys[0], keys[1], key=keys[2], value=mode_value)
+        if mode != ACMode.AIRCLEAN.name:
+            await self._set_mode_airclean_value(False)
 
     async def set_fan_speed(self, speed):
-        """Set the fan speed to a value from the `ACFanSpeed` enum."""
+        """Set fan speed or special wind mode discovered from the model JSON."""
         if speed not in self.fan_speeds:
             raise ValueError(f"Invalid fan speed: {speed}")
-        if speed == "스마트":
-            keys = self._get_cmd_keys(CMD_STATE_SMARTCARE)
-            speed_value = self.model_info.enum_value(keys[2], MODE_ON)
-        elif speed == "쿨파워":
-            keys = self._get_cmd_keys(CMD_STATE_ICEVALLEY)
-            speed_value = self.model_info.enum_value(keys[2], MODE_ON)
-        else:
-            keys = self._get_cmd_keys(CMD_STATE_WIND_STRENGTH)
-            speed_value = self.model_info.enum_value(keys[2], ACFanSpeed[speed].value)
-        await self.set(keys[0], keys[1], key=keys[2], value=speed_value)
+        if speed in self._wind_mode_map:
+            await self.set_wind_mode(speed)
+            return
+        if self._wind_mode_map and self._status.wind_mode != WIND_MODE_OFF:
+            await self.set_wind_mode(WIND_MODE_OFF)
+        speed_value = self._fan_speed_map[speed]
+        await self._set_enum_value(self._wind_strength_key, speed_value, "basicCtrl")
 
-    async def set_horizontal_step_mode(self, mode):
-        """Set the horizontal step to a value from the `ACHStepMode` enum."""
-        if mode not in self.horizontal_step_modes:
-            raise ValueError(f"Invalid horizontal step mode: {mode}")
-        keys = self._get_cmd_keys(CMD_STATE_WDIR_HSTEP)
-        step_mode = self.model_info.enum_value(keys[2], ACHStepMode[mode].value)
-        await self.set(keys[0], keys[1], key=keys[2], value=step_mode)
+    async def set_wind_mode(self, mode):
+        """Set special wind mode discovered from ThinQ model data."""
+        if mode not in self.wind_modes:
+            raise ValueError(f"Invalid wind mode: {mode}")
+        current_mode = self._status.wind_mode
+        if mode == current_mode:
+            return
+        if current_mode != WIND_MODE_OFF:
+            current_key = self._wind_mode_map.get(current_mode)
+            if current_key is not None:
+                await self._set_enum_state(current_key, MODE_OFF, "wModeCtrl")
+        if mode == WIND_MODE_OFF:
+            return
+        state_key = self._wind_mode_map[mode]
+        await self._set_enum_state(
+            state_key, MODE_ON, "wModeCtrl"
+        )
+
+    def _current_dual_fan_speeds(self) -> tuple[str | None, str | None]:
+        """Return current left/right fan labels parsed from current wind strength."""
+        key = self._wind_strength_key
+        if not (key and self._status):
+            return (None, None)
+        if (value := self._status.lookup_enum(key, True)) is None:
+            return (None, None)
+        if "|" not in value:
+            label = self._fan_label_from_enum(value)
+            return (label, label)
+        left_raw, right_raw = value.split("|", 1)
+        return (self._fan_label_from_enum(left_raw), self._fan_label_from_enum(right_raw))
+
+    async def set_dual_fan_speed(self, side: str, speed: str):
+        """Set left or right fan speed while preserving the other side."""
+        if speed not in self.dual_fan_speed_options:
+            raise ValueError(f"Invalid dual fan speed: {speed}")
+        left, right = self._current_dual_fan_speeds()
+        left = left or speed
+        right = right or speed
+        if side == "left":
+            left = speed
+        elif side == "right":
+            right = speed
+        else:
+            raise ValueError(f"Invalid fan side: {side}")
+        if (speed_value := self._dual_fan_speed_map.get((left, right))) is None:
+            raise ValueError(f"Unsupported dual fan speed combination: {left}/{right}")
+        await self._set_enum_value(self._wind_strength_key, speed_value, "basicCtrl")
+
+    async def set_smartcare(self, status: bool):
+        """Set SmartCare on or off."""
+        if not self.is_smartcare_supported:
+            raise ValueError("SmartCare not supported")
+        if status and not self.is_smartcare_available:
+            raise ValueError("SmartCare not available in current AC mode")
+        await self._set_enum_state(STATE_SMARTCARE, MODE_ON if status else MODE_OFF, "wModeCtrl")
 
     async def set_horizontal_swing_mode(self, mode):
         """Set the horizontal swing to a value from the `ACHSwingMode` enum.""" 
@@ -739,14 +1094,6 @@ class AirConditionerDevice(Device):
         keys = self._get_cmd_keys(CMD_STATE_WDIR_HSWING)
         swing_mode = self.model_info.enum_value(keys[2], ACHSwingMode[mode].value)
         await self.set(keys[0], keys[1], key=keys[2], value=swing_mode)
-
-    async def set_vertical_step_mode(self, mode):
-        """Set the vertical step to a value from the `ACVStepMode` enum."""
-        if mode not in self.vertical_step_modes:
-            raise ValueError(f"Invalid vertical step mode: {mode}")
-        keys = self._get_cmd_keys(CMD_STATE_WDIR_VSTEP)
-        step_mode = self.model_info.enum_value(keys[2], ACVStepMode[mode].value)
-        await self.set(keys[0], keys[1], key=keys[2], value=step_mode)
 
     async def set_vertical_swing_mode(self, mode):
         """Set the vertical swing to a value from the `ACVSwingMode` enum."""
@@ -769,7 +1116,10 @@ class AirConditionerDevice(Device):
         """Set the Airclean mode on or off."""
         if not self.is_mode_airclean_supported:
             raise ValueError("Airclean mode not supported")
+        await self._set_mode_airclean_value(status)
 
+    async def _set_mode_airclean_value(self, status: bool):
+        """Set Airclean flag when the raw model state exists."""
         keys = self._get_cmd_keys(CMD_STATE_MODE_AIRCLEAN)
         mode_key = MODE_AIRCLEAN_ON if status else MODE_AIRCLEAN_OFF
         mode = self.model_info.enum_value(keys[2], mode_key)
@@ -779,6 +1129,8 @@ class AirConditionerDevice(Device):
         """Set the Powersave or off."""
         if not self.is_powersave_supported:
             raise ValueError("Powersave not supported")
+        if status and not self.is_airclean_incompatible_mode_available:
+            raise ValueError("Powersave not available in Airclean mode")
 
         keys = self._get_cmd_keys(CMD_STATE_POWERSAVE)
         mode_key = MODE_ON if status else MODE_OFF
@@ -925,12 +1277,14 @@ class AirConditionerDevice(Device):
     async def set(
         self, ctrl_key, command, *, key=None, value=None, data=None, ctrl_path=None
     ):
-        """Set a device's control for `key` to `value`."""
-        await super().set(
-            ctrl_key, command, key=key, value=value, data=data, ctrl_path=ctrl_path
-        )
-        if self._status:
-            self._status.update_status(key, value)
+        """Set a device control and serialize AC command bursts."""
+        async with self._control_lock:
+            await super().set(
+                ctrl_key, command, key=key, value=value, data=data, ctrl_path=ctrl_path
+            )
+            if self._status:
+                self._status.update_status(key, value)
+            await asyncio.sleep(AC_CONTROL_COMMAND_DELAY)
 
     def reset_status(self):
         """Reset the device's status"""
@@ -1102,24 +1456,35 @@ class AirConditionerStatus(DeviceStatus):
     @property
     def fan_speed(self):
         """Return current fan speed."""
-        key = self._get_state_key(STATE_WIND_STRENGTH)
+        wind_mode = self.wind_mode
+        if wind_mode != WIND_MODE_OFF:
+            return wind_mode
+        key = self._device._wind_strength_key
+        if not key:
+            return None
         if (value := self.lookup_enum(key, True)) is None:
             return None
-        try:
-            return ACFanSpeed(value).name
-        except ValueError:
-            return None
+        return self._device._fan_label_from_enum(value)
 
     @property
-    def horizontal_step_mode(self):
-        """Return current horizontal step mode."""
-        key = self._get_state_key(STATE_WDIR_HSTEP)
-        if (value := self.lookup_enum(key, True)) is None:
-            return None
-        try:
-            return ACHStepMode(value).name
-        except ValueError:
-            return None
+    def left_fan_speed(self):
+        """Return current left fan speed."""
+        left, _ = self._device._current_dual_fan_speeds()
+        return left
+
+    @property
+    def right_fan_speed(self):
+        """Return current right fan speed."""
+        _, right = self._device._current_dual_fan_speeds()
+        return right
+
+    @property
+    def wind_mode(self):
+        """Return current special wind mode."""
+        for label, key in self._device._wind_mode_map.items():
+            if self.lookup_enum(key, True) == MODE_ON:
+                return label
+        return WIND_MODE_OFF
 
     @property
     def horizontal_swing_mode(self):
@@ -1139,17 +1504,6 @@ class AirConditionerStatus(DeviceStatus):
         if (value := self.lookup_enum(key, True)) is None:
             return None
         return value == MODE_ON
-
-    @property
-    def vertical_step_mode(self):
-        """Return current vertical step mode."""
-        key = self._get_state_key(STATE_WDIR_VSTEP)
-        if (value := self.lookup_enum(key, True)) is None:
-            return None
-        try:
-            return ACVStepMode(value).name
-        except ValueError:
-            return None
 
     @property
     def vertical_swing_mode(self):
@@ -1266,6 +1620,17 @@ class AirConditionerStatus(DeviceStatus):
             return None
         status = value == MODE_ON
         return self._update_feature(AirConditionerFeatures.AUTODRY, status, False)
+
+    @property
+    def smartcare(self):
+        """Return SmartCare status."""
+        if not self._device.is_smartcare_supported:
+            return None
+        key = self._get_state_key(STATE_SMARTCARE)
+        if (value := self.lookup_enum(key, True)) is None:
+            return None
+        status = value == MODE_ON
+        return self._update_feature(AirConditionerFeatures.SMARTCARE, status, False)
 
     @property
     def mode_jet(self):
@@ -1478,6 +1843,7 @@ class AirConditionerStatus(DeviceStatus):
             self.mode_airclean,
             self.powersave,
             self.autodry,
+            self.smartcare,
             self.mode_jet,
             self.lighting_display,
             self.water_in_current_temp,
