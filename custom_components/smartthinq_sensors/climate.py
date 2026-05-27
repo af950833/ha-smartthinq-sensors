@@ -1,7 +1,7 @@
 """Platform for LGE climate integration."""
 
 from __future__ import annotations
-
+import asyncio
 from dataclasses import dataclass
 import logging
 from typing import Any, Awaitable, Callable
@@ -37,7 +37,6 @@ from .wideq import AirConditionerFeatures, DeviceType, TemperatureUnit
 from .wideq.devices.ac import (
     AWHP_MAX_TEMP,
     AWHP_MIN_TEMP,
-    ACFanSpeed,
     ACMode,
     AirConditionerDevice,
 )
@@ -46,6 +45,7 @@ from .wideq.devices.ac import (
 ATTR_FRIDGE = "fridge"
 ATTR_FREEZER = "freezer"
 HVAC_MODE_NONE = "--"
+AC_POWER_ON_MODE_DELAY = 2
 
 # service definitions
 SERVICE_SET_SLEEP_TIME = "set_sleep_time"
@@ -55,6 +55,7 @@ HVAC_MODE_LOOKUP: dict[str, HVACMode] = {
     ACMode.HEAT.name: HVACMode.HEAT,
     ACMode.DRY.name: HVACMode.DRY,
     ACMode.COOL.name: HVACMode.COOL,
+    ACMode.FAN.name: HVACMode.FAN_ONLY,
     ACMode.AIRCLEAN.name: HVACMode.FAN_ONLY,
     ACMode.ACO.name: HVACMode.HEAT_COOL,
 }
@@ -297,8 +298,10 @@ class LGEACClimate(LGEClimate):
         if (operation_mode := reverse_lookup.get(hvac_mode)) is None:
             raise ValueError(f"Invalid hvac_mode [{hvac_mode}]")
 
-        if not self._api.state.is_on:
+        was_off = not self._api.state.is_on
+        if was_off:
             await self._device.power(True)
+            await asyncio.sleep(AC_POWER_ON_MODE_DELAY)
         if operation_mode != HVAC_MODE_NONE:
             await self._device.set_op_mode(operation_mode)
         self._api.async_set_updated()
@@ -327,6 +330,7 @@ class LGEACClimate(LGEClimate):
 
         if not self._api.state.is_on:
             await self._device.power(True)
+            await asyncio.sleep(AC_POWER_ON_MODE_DELAY)
         await self._device.set_op_mode(operation_mode)
         self._api.async_set_updated()
 

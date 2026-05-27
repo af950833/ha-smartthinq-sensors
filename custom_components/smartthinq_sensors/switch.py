@@ -43,7 +43,7 @@ class ThinQSwitchEntityDescription(SwitchEntityDescription):
     available_fn: Callable[[Any], bool] | None = None
     turn_off_fn: Callable[[Any], Awaitable[None]] | None = None
     turn_on_fn: Callable[[Any], Awaitable[None]] | None = None
-    value_fn: Callable[[Any], bool] | None = None
+    value_fn: Callable[[Any], bool | str | None] | None = None
 
 
 WASH_DEV_SWITCH: tuple[ThinQSwitchEntityDescription, ...] = (
@@ -104,6 +104,7 @@ AC_SWITCH: tuple[ThinQSwitchEntityDescription, ...] = (
         icon="mdi:leaf",
         turn_off_fn=lambda x: x.device.set_powersave(False),
         turn_on_fn=lambda x: x.device.set_powersave(True),
+        available_fn=lambda x: x.device.is_airclean_incompatible_mode_available,
     ),
     ThinQSwitchEntityDescription(
         key=AirConditionerFeatures.AUTODRY,
@@ -134,6 +135,15 @@ AC_SWITCH: tuple[ThinQSwitchEntityDescription, ...] = (
         turn_off_fn=lambda x: x.device.set_mode_awhp_silent(False),
         turn_on_fn=lambda x: x.device.set_mode_awhp_silent(True),
         available_fn=lambda x: x.is_power_on,
+    ),
+    ThinQSwitchEntityDescription(
+        key=AirConditionerFeatures.SMARTCARE,
+        name="Smartcare",
+        icon="mdi:auto-fix",
+        value_fn=lambda x: x.device._status.smartcare if x.device._status else None,
+        turn_off_fn=lambda x: x.device.set_smartcare(False),
+        turn_on_fn=lambda x: x.device.set_smartcare(True),
+        available_fn=lambda x: x.device.is_smartcare_available,
     ),
 )
 MICROWAVE_SWITCH: tuple[ThinQSwitchEntityDescription, ...] = (
@@ -169,7 +179,10 @@ def _switch_exist(
 ) -> bool:
     """Check if a switch exist for device."""
     if switch_desc.value_fn is not None:
-        return True
+        try:
+            return switch_desc.value_fn(LGEBaseDevice(lge_device)) is not None
+        except (AttributeError, ValueError, TypeError):
+            return False
 
     feature = switch_desc.key
     if feature in lge_device.available_features:

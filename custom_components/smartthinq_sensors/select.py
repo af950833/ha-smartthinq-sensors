@@ -36,7 +36,7 @@ class ThinQSelectEntityDescription(
     """A class that describes ThinQ select entities."""
 
     available_fn: Callable[[Any], bool] | None = None
-    value_fn: Callable[[Any], str] | None = None
+    value_fn: Callable[[Any], str | None] | None = None
 
 
 WASH_DEV_SELECT: tuple[ThinQSelectEntityDescription, ...] = (
@@ -48,6 +48,26 @@ WASH_DEV_SELECT: tuple[ThinQSelectEntityDescription, ...] = (
         select_option_fn=lambda x, option: x.device.select_start_course(option),
         available_fn=lambda x: x.device.select_course_enabled,
         value_fn=lambda x: x.device.selected_course,
+    ),
+)
+AC_SELECT: tuple[ThinQSelectEntityDescription, ...] = (
+    ThinQSelectEntityDescription(
+        key="left_fan_speed",
+        name="Left fan speed",
+        icon="mdi:fan-chevron-up",
+        options_fn=lambda x: x.device.dual_fan_speed_options,
+        select_option_fn=lambda x, option: x.device.set_dual_fan_speed("left", option),
+        available_fn=lambda x: x.state.is_on if x.state else False,
+        value_fn=lambda x: x.state.left_fan_speed if x.state else None,
+    ),
+    ThinQSelectEntityDescription(
+        key="right_fan_speed",
+        name="Right fan speed",
+        icon="mdi:fan-chevron-down",
+        options_fn=lambda x: x.device.dual_fan_speed_options,
+        select_option_fn=lambda x, option: x.device.set_dual_fan_speed("right", option),
+        available_fn=lambda x: x.state.is_on if x.state else False,
+        value_fn=lambda x: x.state.right_fan_speed if x.state else None,
     ),
 )
 MICROWAVE_SELECT: tuple[ThinQSelectEntityDescription, ...] = (
@@ -70,6 +90,7 @@ MICROWAVE_SELECT: tuple[ThinQSelectEntityDescription, ...] = (
 )
 
 SELECT_ENTITIES = {
+    DeviceType.AC: AC_SELECT,
     DeviceType.MICROWAVE: MICROWAVE_SELECT,
     **{dev_type: WASH_DEV_SELECT for dev_type in WM_DEVICE_TYPES},
 }
@@ -79,6 +100,12 @@ def _select_exist(
     lge_device: LGEDevice, select_desc: ThinQSelectEntityDescription
 ) -> bool:
     """Check if a select exist for device."""
+    try:
+        if not select_desc.options_fn(lge_device):
+            return False
+    except (AttributeError, ValueError, TypeError):
+        return False
+
     if select_desc.value_fn is not None:
         return True
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import timedelta
 import logging
@@ -85,6 +86,7 @@ DISCOVERED_DEVICES = "discovered_devices"
 UNSUPPORTED_DEVICES = "unsupported_devices"
 
 SCAN_INTERVAL = timedelta(seconds=30)
+CONTROL_REFRESH_DELAY = 2
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -330,6 +332,7 @@ class LGEDevice:
 
         self._state = None
         self._coordinator: DataUpdateCoordinator | None = None
+        self._control_refresh_task: asyncio.Task | None = None
         self._disc_count = 0
         self._available = True
 
@@ -421,6 +424,27 @@ class LGEDevice:
         """Manually update state and notify coordinator entities."""
         if self._coordinator:
             self._coordinator.async_set_updated_data(self._state)
+            self._async_schedule_control_refresh()
+
+    @callback
+    def _async_schedule_control_refresh(self):
+        """Schedule a short delayed refresh after a local control command."""
+        if not self._coordinator:
+            return
+        if self._control_refresh_task and not self._control_refresh_task.done():
+            self._control_refresh_task.cancel()
+        self._control_refresh_task = self._hass.async_create_task(
+            self._async_control_refresh()
+        )
+
+    async def _async_control_refresh(self):
+        """Refresh device state after LG has applied the control command."""
+        try:
+            await asyncio.sleep(CONTROL_REFRESH_DELAY)
+            if self._coordinator:
+                await self._coordinator.async_request_refresh()
+        except asyncio.CancelledError:
+            pass
 
     async def _create_coordinator(self) -> None:
         """Get the coordinator for a specific device."""
