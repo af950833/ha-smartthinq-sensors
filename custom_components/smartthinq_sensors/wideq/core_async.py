@@ -1197,7 +1197,7 @@ class Session:
                 "ctrlKey": ctrl_key,
                 "command": command,
                 "dataKey": key or "",
-                "dataValue": value or "",
+                "dataValue": "" if value is None else value,
             }
 
         if payload:
