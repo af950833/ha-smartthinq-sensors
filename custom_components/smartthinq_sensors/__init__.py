@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
 from homeassistant.components import persistent_notification
@@ -33,6 +33,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
     CLIENT,
+    CONF_CLIENT_ID_CREATED_ON,
     CONF_LANGUAGE,
     CONF_USE_API_V2,
     DOMAIN,
@@ -118,7 +119,8 @@ class LGEAuthentication:
         self,
         token: str,
         client_id: str | None = None,
-        update_clientid_callback: Callable[[str], None] | None = None,
+        client_id_created_on: datetime | None = None,
+        update_clientid_callback: Callable[[str, datetime], None] | None = None,
     ) -> ClientAsync:
         """Create a new client using refresh token."""
         return await ClientAsync.from_token(
@@ -126,6 +128,7 @@ class LGEAuthentication:
             country=self._region,
             language=self._language,
             client_id=client_id,
+            client_id_created_on=client_id_created_on,
             update_clientid_callback=update_clientid_callback,
         )
 
@@ -151,6 +154,20 @@ def _notify_message(
     )
 
 
+def _parse_datetime(value: str | None) -> datetime | None:
+    """Parse a stored ISO formatted datetime."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        _LOGGER.debug("Ignoring invalid stored client ID creation time: %s", value)
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up SmartThinQ integration from a config entry."""
 
@@ -168,6 +185,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     language = entry.data[CONF_LANGUAGE]
     refresh_token = entry.data[CONF_TOKEN]
     client_id: str | None = entry.data.get(CONF_CLIENT_ID)
+    client_id_created_on = _parse_datetime(entry.data.get(CONF_CLIENT_ID_CREATED_ON))
     use_api_v2 = entry.data.get(CONF_USE_API_V2, False)
     entry_data = {
         key: value
@@ -199,10 +217,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             language,
         )
 
-    def _update_clientid_callback(client_id: str) -> None:
+    def _update_clientid_callback(client_id: str, created_on: datetime) -> None:
         """Update config entry with the new client id."""
         hass.config_entries.async_update_entry(
-            entry, data={**entry_data, CONF_CLIENT_ID: client_id}
+            entry,
+            data={
+                **entry_data,
+                CONF_CLIENT_ID: client_id,
+                CONF_CLIENT_ID_CREATED_ON: created_on.isoformat(),
+            },
         )
 
     # if network is not connected we can have some error
@@ -212,6 +235,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         client = await lge_auth.create_client_from_token(
             refresh_token,
             client_id,
+            client_id_created_on,
             _update_clientid_callback,
         )
     except (AuthenticationError, InvalidCredentialError, TokenError) as exc:

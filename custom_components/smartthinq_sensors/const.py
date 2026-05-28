@@ -1,6 +1,6 @@
 """Constants for LGE ThinQ custom component."""
 
-__version__ = "0.42.2.6"
+__version__ = "0.42.2.7"
 PROJECT_URL = "https://github.com/af950833/ha-smartthinq-sensors/"
 ISSUE_URL = f"{PROJECT_URL}issues"
 
@@ -34,6 +34,7 @@ ATTR_OVEN_TEMP_UNIT = "oven_temp_unit"
 # configuration
 CONF_LANGUAGE = "language"
 CONF_USE_API_V2 = "use_api_v2"
+CONF_CLIENT_ID_CREATED_ON = "client_id_created_on"
 
 CLIENT = "client"
 LGE_DEVICES = "lge_devices"

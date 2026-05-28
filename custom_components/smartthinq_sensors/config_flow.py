@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 import logging
 from typing import Any
 
@@ -28,6 +29,7 @@ from homeassistant.core import callback
 
 from . import LGEAuthentication, is_valid_ha_version
 from .const import (
+    CONF_CLIENT_ID_CREATED_ON,
     CONF_LANGUAGE,
     CONF_USE_API_V2,
     DOMAIN,
@@ -58,6 +60,7 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
         self._language: str = DEFAULT_LANGUAGE
         self._token: str | None = None
         self._client_id: str | None = None
+        self._client_id_created_on: datetime | None = None
 
         self._error: str | None = None
         self._is_import = False
@@ -140,6 +143,7 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
             return RESULT_NO_DEV
 
         self._client_id = client.client_id
+        self._client_id_created_on = client.client_id_created_on
         return RESULT_SUCCESS
 
     async def _manage_error(
@@ -171,6 +175,8 @@ class SmartThinQFlowHandler(ConfigFlow, domain=DOMAIN):
         }
         if self._client_id:
             data[CONF_CLIENT_ID] = self._client_id
+        if self._client_id_created_on:
+            data[CONF_CLIENT_ID_CREATED_ON] = self._client_id_created_on.isoformat()
 
         # if an entry exists, we are reconfiguring
         if entries := self._async_current_entries():
