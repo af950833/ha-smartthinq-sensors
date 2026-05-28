@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 import json
 import logging
+from urllib.parse import urlencode
 
 from ..const import RefrigeratorFeatures, StateOptions, TemperatureUnit
 from ..core_async import ClientAsync
+from ..core_exceptions import InvalidRequestError
 from ..device import LABEL_BIT_OFF, LABEL_BIT_ON, Device, DeviceStatus
 from ..device_info import DeviceInfo
 from ..model_info import TYPE_ENUM
@@ -40,6 +43,8 @@ DEFAULT_FREEZER_RANGE_F = [-8, 6]
 
 REFR_ROOT_DATA = "refState"
 CTRL_BASIC = ["Control", "basicCtrl"]
+ENERGY_USAGE_POLL_INTERVAL = 300  # 5 minutes
+CARE_ENERGY_API_KEY = "F0nGHw6tcJ8JEwlmNvuVe8EVuhbnAVJa8IDMbJ1i"
 
 STATE_ECO_FRIENDLY = ["EcoFriendly", "ecoFriendly"]
 STATE_ICE_PLUS = ["IcePlus", ""]
@@ -72,6 +77,14 @@ class RefrigeratorDevice(Device):
         self._fridge_ranges = None
         self._freezer_temps = None
         self._freezer_ranges = None
+        self._energy_usage = {
+            RefrigeratorFeatures.ENERGY_TODAY: None,
+            RefrigeratorFeatures.ENERGY_MONTH: None,
+        }
+        self._energy_usage_supported = True
+        self._last_energy_usage_poll: datetime | None = None
+        self._care_uri: str | None = None
+        self._home_id: str | None = None
 
     def _get_feature_info(self, item_key):
         config = self.model_info.config_value("visibleItems")
@@ -360,6 +373,115 @@ class RefrigeratorDevice(Device):
         self._status = RefrigeratorStatus(self)
         return self._status
 
+    @staticmethod
+    def _energy_kwh(value) -> float:
+        """Convert ThinQ energy values from Wh to kWh."""
+        try:
+            if value in (None, "NO_DATA"):
+                return 0
+            return round(int(float(value)) / 1000, 2)
+        except (TypeError, ValueError):
+            return 0
+
+    async def _get_care_uri(self) -> str | None:
+        """Return the Care API URI used by ThinQ Web energy pages."""
+        if self._care_uri:
+            return self._care_uri
+        gateway = await self._client.auth.gateway.core.gateway_info()
+        uris = gateway.get("uris") or {}
+        self._care_uri = (uris.get("tcnHdssUri") or uris.get("hdssUri") or "").rstrip(
+            "/"
+        )
+        return self._care_uri
+
+    async def _get_home_id(self) -> str | None:
+        """Return the current ThinQ home id."""
+        if self._home_id:
+            return self._home_id
+        homes = await self._client.session._get_homes()
+        if not homes:
+            return None
+        self._home_id = next(iter(homes))
+        return self._home_id
+
+    async def get_energy_usage(self):
+        """Get daily and monthly energy usage in kWh from ThinQ Web Care API."""
+        if not self._energy_usage_supported:
+            return None
+
+        care_uri = await self._get_care_uri()
+        home_id = await self._get_home_id()
+        if not care_uri or not home_id:
+            return None
+
+        now = datetime.now()
+        query = urlencode(
+            {
+                "searchYearMonth": now.strftime("%Y%m"),
+                "deviceId": self.device_info.device_id,
+                "deviceGroupTypeCd": "REF",
+            }
+        )
+        url = f"{care_uri}/v3/hdss/energy/deviceEnergyUsage?{query}"
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "x-api-key": CARE_ENERGY_API_KEY,
+            "x-home-id": home_id,
+            "x-timezone": self.device_info.as_dict().get("timezoneCode", "Asia/Seoul"),
+            "x-thinq-app-pageid": "GAM_ENM01_Moment",
+        }
+
+        try:
+            response = await self._client.auth.gateway.core.thinq2_get(
+                url,
+                access_token=self._client.auth.access_token,
+                user_number=self._client.auth.user_number,
+                headers=headers,
+            )
+        except (ValueError, InvalidRequestError) as exc:
+            _LOGGER.debug("Error calling refrigerator get_energy_usage method: %s", exc)
+            return None
+
+        if response.get("resultCode") and response.get("resultCode") != "0000":
+            _LOGGER.debug(
+                "Unexpected refrigerator get_energy_usage response: %s", response
+            )
+            return None
+
+        result = response.get("result") or response
+        if result.get("supportYn") == "N":
+            self._energy_usage_supported = False
+            return None
+
+        today_key = now.strftime("%Y-%m-%d")
+        today = None
+        for item in result.get("dailyDataList") or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("day", ""))[:10] == today_key:
+                today = self._energy_kwh(item.get("useAmount"))
+                break
+
+        return {
+            RefrigeratorFeatures.ENERGY_TODAY: today,
+            RefrigeratorFeatures.ENERGY_MONTH: self._energy_kwh(
+                result.get("monthUseAmount")
+            ),
+        }
+
+    async def _update_energy_usage(self):
+        """Update energy usage values on a slower polling interval."""
+        if not self._energy_usage_supported:
+            return
+        now = datetime.now()
+        if self._last_energy_usage_poll is not None:
+            diff = (now - self._last_energy_usage_poll).total_seconds()
+            if diff < ENERGY_USAGE_POLL_INTERVAL:
+                return
+        self._last_energy_usage_poll = now
+        if energy_usage := await self.get_energy_usage():
+            self._energy_usage.update(energy_usage)
+
     async def poll(self) -> RefrigeratorStatus | None:
         """Poll the device's current state."""
 
@@ -367,6 +489,7 @@ class RefrigeratorDevice(Device):
         if not res:
             return None
 
+        await self._update_energy_usage()
         self._status = RefrigeratorStatus(self, res)
         return self._status
 
@@ -645,6 +768,28 @@ class RefrigeratorStatus(DeviceStatus):
         )
 
     @property
+    def energy_today(self):
+        """Return today's energy usage."""
+        return self._update_feature(
+            RefrigeratorFeatures.ENERGY_TODAY,
+            self._device._energy_usage.get(RefrigeratorFeatures.ENERGY_TODAY),
+            False,
+            FEATURE_KEY_IGNORE,
+            allow_none=True,
+        )
+
+    @property
+    def energy_month(self):
+        """Return this month's energy usage."""
+        return self._update_feature(
+            RefrigeratorFeatures.ENERGY_MONTH,
+            self._device._energy_usage.get(RefrigeratorFeatures.ENERGY_MONTH),
+            False,
+            FEATURE_KEY_IGNORE,
+            allow_none=True,
+        )
+
+    @property
     def locked_state(self):
         """Return current locked state."""
         state = self.lookup_enum("LockingStatus")
@@ -668,4 +813,6 @@ class RefrigeratorStatus(DeviceStatus):
             self.fresh_air_filter_remain_perc,
             self.water_filter_used_month,
             self.water_filter_remain_perc,
+            self.energy_today,
+            self.energy_month,
         ]

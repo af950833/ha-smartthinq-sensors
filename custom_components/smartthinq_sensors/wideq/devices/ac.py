@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
 import logging
 
@@ -150,6 +152,7 @@ TEMP_STEP_WHOLE = 1.0
 TEMP_STEP_HALF = 0.5
 
 ADD_FEAT_POLL_INTERVAL = 300  # 5 minutes
+ENERGY_USAGE_POLL_INTERVAL = 300  # 5 minutes
 
 LIGHTING_DISPLAY_OFF = "0"
 LIGHTING_DISPLAY_ON = "1"
@@ -257,6 +260,13 @@ class AirConditionerDevice(Device):
 
         self._current_power = None
         self._current_power_supported = True
+        self._energy_usage = {
+            AirConditionerFeatures.ENERGY_TODAY: None,
+            AirConditionerFeatures.ENERGY_YESTERDAY: None,
+            AirConditionerFeatures.ENERGY_MONTH: None,
+        }
+        self._energy_usage_supported = True
+        self._last_energy_usage_poll: datetime | None = None
 
         self._filter_status = None
         self._filter_status_supported = True
@@ -1215,6 +1225,96 @@ class AirConditionerDevice(Device):
             self._current_power_supported = False
             return None
 
+    @staticmethod
+    def _energy_kwh(value) -> float:
+        """Convert ThinQ energy values from Wh to kWh."""
+        try:
+            if value in (None, "NO_DATA"):
+                return 0
+            return round(int(float(value)) / 1000, 2)
+        except (TypeError, ValueError):
+            return 0
+
+    async def get_energy_usage(self):
+        """Get daily and monthly energy usage in kWh from ThinQ2 energy history."""
+        if self._should_poll or not self._energy_usage_supported:
+            return None
+
+        now = datetime.now()
+
+        async def _get_month_history(year: int, month: int):
+            start_date = datetime(year, month, 1).strftime("%Y-%m-%d")
+            end_date = datetime(
+                year, month, calendar.monthrange(year, month)[1]
+            ).strftime("%Y-%m-%d")
+            path = (
+                f"service/aircon/{self.device_info.device_id}/energy-history"
+                f"?period=day&startDate={start_date}&endDate={end_date}"
+                "&saveEnergyYn=N"
+            )
+            return await self._client.session.get2(path)
+
+        try:
+            history = await _get_month_history(now.year, now.month)
+        except (ValueError, InvalidRequestError) as exc:
+            _LOGGER.debug("Error calling get_energy_usage method: %s", exc)
+            return None
+        if not isinstance(history, list):
+            _LOGGER.debug("Unexpected get_energy_usage response: %s", history)
+            self._energy_usage_supported = False
+            return None
+
+        today_key = now.strftime("%Y-%m-%d")
+        yesterday_key = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        today = None
+        yesterday = None
+        month = 0
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            used_date = str(item.get("usedDate", ""))[:10]
+            energy = self._energy_kwh(item.get("energyData"))
+            month += energy
+            if used_date == today_key:
+                today = energy
+            elif used_date == yesterday_key:
+                yesterday = energy
+
+        if yesterday is None and now.day == 1:
+            prev_month = now.month - 1 or 12
+            prev_year = now.year - 1 if now.month == 1 else now.year
+            try:
+                prev_history = await _get_month_history(prev_year, prev_month)
+            except (ValueError, InvalidRequestError) as exc:
+                _LOGGER.debug("Error calling previous get_energy_usage method: %s", exc)
+            else:
+                if isinstance(prev_history, list):
+                    for item in prev_history:
+                        if not isinstance(item, dict):
+                            continue
+                        if str(item.get("usedDate", ""))[:10] == yesterday_key:
+                            yesterday = self._energy_kwh(item.get("energyData"))
+                            break
+
+        return {
+            AirConditionerFeatures.ENERGY_TODAY: today,
+            AirConditionerFeatures.ENERGY_YESTERDAY: yesterday,
+            AirConditionerFeatures.ENERGY_MONTH: round(month, 2),
+        }
+
+    async def _update_energy_usage(self):
+        """Update energy usage values on a slower polling interval."""
+        if not self._energy_usage_supported:
+            return
+        now = datetime.now()
+        if self._last_energy_usage_poll is not None:
+            diff = (now - self._last_energy_usage_poll).total_seconds()
+            if diff < ENERGY_USAGE_POLL_INTERVAL:
+                return
+        self._last_energy_usage_poll = now
+        if energy_usage := await self.get_energy_usage():
+            self._energy_usage.update(energy_usage)
+
     async def get_filter_state(self):
         """Get information about the filter."""
         if not self._filter_status_supported:
@@ -1316,6 +1416,7 @@ class AirConditionerDevice(Device):
         # this commands is to get filter status on V2 device
         if not self.is_air_to_water:
             self._filter_status = await self.get_filter_state_v2()
+            await self._update_energy_usage()
 
     async def poll(self) -> AirConditionerStatus | None:
         """Poll the device's current state."""
@@ -1573,6 +1674,36 @@ class AirConditionerStatus(DeviceStatus):
             # decrease power when power off
             value = 5
         return self._update_feature(AirConditionerFeatures.ENERGY_CURRENT, value, False)
+
+    @property
+    def energy_today(self):
+        """Return today's energy usage."""
+        return self._update_feature(
+            AirConditionerFeatures.ENERGY_TODAY,
+            self._device._energy_usage.get(AirConditionerFeatures.ENERGY_TODAY),
+            False,
+            allow_none=True,
+        )
+
+    @property
+    def energy_yesterday(self):
+        """Return yesterday's energy usage."""
+        return self._update_feature(
+            AirConditionerFeatures.ENERGY_YESTERDAY,
+            self._device._energy_usage.get(AirConditionerFeatures.ENERGY_YESTERDAY),
+            False,
+            allow_none=True,
+        )
+
+    @property
+    def energy_month(self):
+        """Return this month's energy usage."""
+        return self._update_feature(
+            AirConditionerFeatures.ENERGY_MONTH,
+            self._device._energy_usage.get(AirConditionerFeatures.ENERGY_MONTH),
+            False,
+            allow_none=True,
+        )
 
     @property
     def humidity(self):
@@ -1835,6 +1966,9 @@ class AirConditionerStatus(DeviceStatus):
         _ = [
             self.room_temp,
             self.energy_current,
+            self.energy_today,
+            self.energy_yesterday,
+            self.energy_month,
             self.filters_life,
             self.humidity,
             self.pm10,
