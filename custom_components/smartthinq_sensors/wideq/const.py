@@ -32,6 +32,9 @@ class AirConditionerFeatures(StrEnum):
     """Features for LG Air Conditioner devices."""
 
     ENERGY_CURRENT = "energy_current"
+    ENERGY_TODAY = "energy_today"
+    ENERGY_YESTERDAY = "energy_yesterday"
+    ENERGY_MONTH = "energy_month"
     HOT_WATER_TEMP = "hot_water_temperature"
     HUMIDITY = "humidity"
     FILTER_MAIN_LIFE = "filter_main_life"
@@ -105,6 +108,8 @@ class RefrigeratorFeatures(StrEnum):
     """Features for LG Refrigerator devices."""
 
     ECOFRIENDLY = "eco_friendly"
+    ENERGY_TODAY = "energy_today"
+    ENERGY_MONTH = "energy_month"
     EXPRESSMODE = "express_mode"
     EXPRESSFRIDGE = "express_fridge"
     FRESHAIRFILTER = "fresh_air_filter"
