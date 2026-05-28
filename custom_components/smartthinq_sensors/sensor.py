@@ -21,6 +21,7 @@ from homeassistant.const import (
     PERCENTAGE,
     STATE_UNAVAILABLE,
     EntityCategory,
+    UnitOfEnergy,
     UnitOfPower,
     UnitOfTime,
 )
@@ -206,6 +207,20 @@ REFRIGERATOR_SENSORS: tuple[ThinQSensorEntityDescription, ...] = (
         value_fn=lambda x: x.temp_freezer,
     ),
     ThinQSensorEntityDescription(
+        key=RefrigeratorFeatures.ENERGY_TODAY,
+        name="Energy today",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    ),
+    ThinQSensorEntityDescription(
+        key=RefrigeratorFeatures.ENERGY_MONTH,
+        name="Energy month",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    ),
+    ThinQSensorEntityDescription(
         key=RefrigeratorFeatures.FRESHAIRFILTER_REMAIN_PERC,
         name="Fresh air filter remaining",
         icon="mdi:air-filter",
@@ -258,6 +273,27 @@ AC_SENSORS: tuple[ThinQSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.WATT,
+    ),
+    ThinQSensorEntityDescription(
+        key=AirConditionerFeatures.ENERGY_TODAY,
+        name="Energy today",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    ),
+    ThinQSensorEntityDescription(
+        key=AirConditionerFeatures.ENERGY_YESTERDAY,
+        name="Energy yesterday",
+        state_class=SensorStateClass.TOTAL,
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+    ),
+    ThinQSensorEntityDescription(
+        key=AirConditionerFeatures.ENERGY_MONTH,
+        name="Energy month",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
     ),
     ThinQSensorEntityDescription(
         key=AirConditionerFeatures.HUMIDITY,
