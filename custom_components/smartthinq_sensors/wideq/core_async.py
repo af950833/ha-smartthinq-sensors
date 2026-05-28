@@ -167,7 +167,8 @@ class CoreAsync:
         timeout: int = DEFAULT_TIMEOUT,
         session: aiohttp.ClientSession | None = None,
         client_id: str | None = None,
-        update_clientid_callback: Callable[[str], None] | None = None,
+        client_id_created_on: datetime | None = None,
+        update_clientid_callback: Callable[[str, datetime], None] | None = None,
     ):
         """
         Create the CoreAsync object
@@ -183,9 +184,9 @@ class CoreAsync:
         self._language = language
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._client_id = client_id
-        self._client_id_created_on = (
-            datetime.now(timezone.utc) if client_id is not None else None
-        )
+        self._client_id_created_on = client_id_created_on
+        if self._client_id is not None and self._client_id_created_on is None:
+            self._client_id_created_on = datetime.fromtimestamp(0, timezone.utc)
         self._update_clientid_callback = update_clientid_callback
         self._lang_pack_url = None
 
@@ -215,6 +216,11 @@ class CoreAsync:
     def client_id(self) -> str | None:
         """Return the associated client_id."""
         return self._client_id
+
+    @property
+    def client_id_created_on(self) -> datetime | None:
+        """Return when the associated client_id was created."""
+        return self._client_id_created_on
 
     async def close(self):
         """Close the managed session on exit."""
@@ -261,7 +267,7 @@ class CoreAsync:
         self._client_id = hash_object.hexdigest()
         self._client_id_created_on = datetime.now(timezone.utc)
         if self._update_clientid_callback is not None:
-            self._update_clientid_callback(self._client_id)
+            self._update_clientid_callback(self._client_id, self._client_id_created_on)
         return self._client_id
 
     def _web_client_id(self) -> str:
@@ -1322,6 +1328,13 @@ class ClientAsync:
         return self._auth.gateway.core.client_id
 
     @property
+    def client_id_created_on(self) -> datetime | None:
+        """Return when the associated client_id was created."""
+        if not self._auth:
+            return None
+        return self._auth.gateway.core.client_id_created_on
+
+    @property
     def session(self) -> Session:
         """Return the Session object associated to this client."""
         self._check_connected()
@@ -1412,7 +1425,8 @@ class ClientAsync:
         language: str = DEFAULT_LANGUAGE,
         aiohttp_session: aiohttp.ClientSession | None = None,
         client_id: str | None = None,
-        update_clientid_callback: Callable[[str], None] | None = None,
+        client_id_created_on: datetime | None = None,
+        update_clientid_callback: Callable[[str, datetime], None] | None = None,
         enable_emulation: bool = False,
     ) -> ClientAsync:
         """
@@ -1428,6 +1442,7 @@ class ClientAsync:
             language,
             session=aiohttp_session,
             client_id=client_id,
+            client_id_created_on=client_id_created_on,
             update_clientid_callback=update_clientid_callback,
         )
         try:
