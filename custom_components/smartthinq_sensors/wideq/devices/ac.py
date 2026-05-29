@@ -1235,6 +1235,16 @@ class AirConditionerDevice(Device):
         except (TypeError, ValueError):
             return 0
 
+    @staticmethod
+    def _energy_wh(value) -> int:
+        """Convert ThinQ energy values to Wh."""
+        try:
+            if value in (None, "NO_DATA"):
+                return 0
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
     async def get_energy_usage(self):
         """Get daily and monthly energy usage in kWh from ThinQ2 energy history."""
         if self._should_poll or not self._energy_usage_supported:
@@ -1268,13 +1278,14 @@ class AirConditionerDevice(Device):
         yesterday_key = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         today = None
         yesterday = None
-        month = 0
+        month_wh = 0
         for item in history:
             if not isinstance(item, dict):
                 continue
             used_date = str(item.get("usedDate", ""))[:10]
-            energy = self._energy_kwh(item.get("energyData"))
-            month += energy
+            energy_wh = self._energy_wh(item.get("energyData"))
+            energy = round(energy_wh / 1000, 2)
+            month_wh += energy_wh
             if used_date == today_key:
                 today = energy
             elif used_date == yesterday_key:
@@ -1299,7 +1310,7 @@ class AirConditionerDevice(Device):
         return {
             AirConditionerFeatures.ENERGY_TODAY: today,
             AirConditionerFeatures.ENERGY_YESTERDAY: yesterday,
-            AirConditionerFeatures.ENERGY_MONTH: round(month, 2),
+            AirConditionerFeatures.ENERGY_MONTH: round(month_wh / 1000, 2),
         }
 
     async def _update_energy_usage(self):

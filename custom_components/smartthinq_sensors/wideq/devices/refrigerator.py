@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import base64
+from calendar import monthrange
 from datetime import datetime
 import json
 import logging
-from urllib.parse import urlencode
 
 from ..const import RefrigeratorFeatures, StateOptions, TemperatureUnit
 from ..core_async import ClientAsync
@@ -44,7 +44,6 @@ DEFAULT_FREEZER_RANGE_F = [-8, 6]
 REFR_ROOT_DATA = "refState"
 CTRL_BASIC = ["Control", "basicCtrl"]
 ENERGY_USAGE_POLL_INTERVAL = 300  # 5 minutes
-CARE_ENERGY_API_KEY = "F0nGHw6tcJ8JEwlmNvuVe8EVuhbnAVJa8IDMbJ1i"
 
 STATE_ECO_FRIENDLY = ["EcoFriendly", "ecoFriendly"]
 STATE_ICE_PLUS = ["IcePlus", ""]
@@ -83,8 +82,6 @@ class RefrigeratorDevice(Device):
         }
         self._energy_usage_supported = True
         self._last_energy_usage_poll: datetime | None = None
-        self._care_uri: str | None = None
-        self._home_id: str | None = None
 
     def _get_feature_info(self, item_key):
         config = self.model_info.config_value("visibleItems")
@@ -374,99 +371,89 @@ class RefrigeratorDevice(Device):
         return self._status
 
     @staticmethod
-    def _energy_kwh(value) -> float:
-        """Convert ThinQ energy values from Wh to kWh."""
+    def _energy_history_items(history) -> list[dict] | None:
+        """Return ThinQ Web energy-history items."""
+        if isinstance(history, list):
+            return history
+        if isinstance(history, dict):
+            items = history.get("item")
+            if isinstance(items, list):
+                return items
+        return None
+
+    @classmethod
+    def _energy_history_kwh(cls, history) -> float | None:
+        """Sum ThinQ Web energy-history power values in kWh."""
+        total_wh = cls._energy_history_wh(history)
+        if total_wh is None:
+            return None
+        return round(total_wh / 1000, 2)
+
+    @classmethod
+    def _energy_history_wh(cls, history) -> int | None:
+        """Sum ThinQ Web energy-history power values in Wh."""
+        items = cls._energy_history_items(history)
+        if items is None:
+            return None
+
+        total_wh = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            total_wh += cls._energy_wh(
+                item.get("power", item.get("energyData", item.get("useAmount")))
+            )
+        return total_wh
+
+    @staticmethod
+    def _energy_wh(value) -> int:
+        """Convert ThinQ energy values to Wh."""
         try:
             if value in (None, "NO_DATA"):
                 return 0
-            return round(int(float(value)) / 1000, 2)
+            return int(float(value))
         except (TypeError, ValueError):
             return 0
 
-    async def _get_care_uri(self) -> str | None:
-        """Return the Care API URI used by ThinQ Web energy pages."""
-        if self._care_uri:
-            return self._care_uri
-        gateway = await self._client.auth.gateway.core.gateway_info()
-        uris = gateway.get("uris") or {}
-        self._care_uri = (uris.get("tcnHdssUri") or uris.get("hdssUri") or "").rstrip(
-            "/"
-        )
-        return self._care_uri
-
-    async def _get_home_id(self) -> str | None:
-        """Return the current ThinQ home id."""
-        if self._home_id:
-            return self._home_id
-        homes = await self._client.session._get_homes()
-        if not homes:
-            return None
-        self._home_id = next(iter(homes))
-        return self._home_id
-
     async def get_energy_usage(self):
-        """Get daily and monthly energy usage in kWh from ThinQ Web Care API."""
+        """Get daily and monthly energy usage in kWh from ThinQ Web energy history."""
         if not self._energy_usage_supported:
             return None
 
-        care_uri = await self._get_care_uri()
-        home_id = await self._get_home_id()
-        if not care_uri or not home_id:
-            return None
-
         now = datetime.now()
-        query = urlencode(
-            {
-                "searchYearMonth": now.strftime("%Y%m"),
-                "deviceId": self.device_info.device_id,
-                "deviceGroupTypeCd": "REF",
-            }
-        )
-        url = f"{care_uri}/v3/hdss/energy/deviceEnergyUsage?{query}"
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "x-api-key": CARE_ENERGY_API_KEY,
-            "x-home-id": home_id,
-            "x-timezone": self.device_info.as_dict().get("timezoneCode", "Asia/Seoul"),
-            "x-thinq-app-pageid": "GAM_ENM01_Moment",
-        }
+        today = now.strftime("%Y-%m-%d")
+        month_start = datetime(now.year, now.month, 1).strftime("%Y-%m-%d")
+        month_end = datetime(
+            now.year, now.month, monthrange(now.year, now.month)[1]
+        ).strftime("%Y-%m-%d")
+
+        async def _get_history(period: str, start_date: str, end_date: str):
+            path = (
+                f"service/fridge/{self.device_info.device_id}/energy-history"
+                f"?period={period}&startDate={start_date}&endDate={end_date}"
+            )
+            return await self._client.session.get2(path)
 
         try:
-            response = await self._client.auth.gateway.core.thinq2_get(
-                url,
-                access_token=self._client.auth.access_token,
-                user_number=self._client.auth.user_number,
-                headers=headers,
-            )
+            today_history = await _get_history("hour", today, today)
+            month_history = await _get_history("month", month_start, month_end)
         except (ValueError, InvalidRequestError) as exc:
             _LOGGER.debug("Error calling refrigerator get_energy_usage method: %s", exc)
             return None
 
-        if response.get("resultCode") and response.get("resultCode") != "0000":
+        today_usage = self._energy_history_wh(today_history)
+        month_usage = self._energy_history_kwh(month_history)
+        if today_usage is None or month_usage is None:
             _LOGGER.debug(
-                "Unexpected refrigerator get_energy_usage response: %s", response
+                "Unexpected refrigerator get_energy_usage response: today=%s, month=%s",
+                today_history,
+                month_history,
             )
             return None
 
-        result = response.get("result") or response
-        if result.get("supportYn") == "N":
-            self._energy_usage_supported = False
-            return None
-
-        today_key = now.strftime("%Y-%m-%d")
-        today = None
-        for item in result.get("dailyDataList") or []:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("day", ""))[:10] == today_key:
-                today = self._energy_kwh(item.get("useAmount"))
-                break
-
         return {
-            RefrigeratorFeatures.ENERGY_TODAY: today,
-            RefrigeratorFeatures.ENERGY_MONTH: self._energy_kwh(
-                result.get("monthUseAmount")
-            ),
+            RefrigeratorFeatures.ENERGY_TODAY: today_usage,
+            RefrigeratorFeatures.ENERGY_MONTH: month_usage,
         }
 
     async def _update_energy_usage(self):
