@@ -209,9 +209,9 @@ REFRIGERATOR_SENSORS: tuple[ThinQSensorEntityDescription, ...] = (
     ThinQSensorEntityDescription(
         key=RefrigeratorFeatures.ENERGY_TODAY,
         name="Energy today",
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        device_class=SensorDeviceClass.ENERGY,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        icon="mdi:lightning-bolt",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfEnergy.WATT_HOUR,
     ),
     ThinQSensorEntityDescription(
         key=RefrigeratorFeatures.ENERGY_MONTH,
@@ -277,15 +277,15 @@ AC_SENSORS: tuple[ThinQSensorEntityDescription, ...] = (
     ThinQSensorEntityDescription(
         key=AirConditionerFeatures.ENERGY_TODAY,
         name="Energy today",
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        device_class=SensorDeviceClass.ENERGY,
+        icon="mdi:lightning-bolt",
+        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
     ),
     ThinQSensorEntityDescription(
         key=AirConditionerFeatures.ENERGY_YESTERDAY,
         name="Energy yesterday",
-        state_class=SensorStateClass.TOTAL,
-        device_class=SensorDeviceClass.ENERGY,
+        icon="mdi:lightning-bolt",
+        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
     ),
     ThinQSensorEntityDescription(
