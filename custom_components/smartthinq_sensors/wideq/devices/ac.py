@@ -25,8 +25,8 @@ AC_CONTROL_COMMAND_DELAY = 1.0
 WIND_MODE_OFF = "설정 안 함"
 DISCOVERED_FEATURE_LABELS = {
     "airClean": "공기청정",
-    "iceValley": "아이스 쿨파워",
-    "flowLongPower": "아이스 롱파워",
+    "iceValley": "쿨파워",
+    "flowLongPower": "롱파워",
     "smartCare": "스마트",
 }
 WIND_MODE_TOKENS = {
@@ -1095,7 +1095,11 @@ class AirConditionerDevice(Device):
             raise ValueError("SmartCare not supported")
         if status and not self.is_smartcare_available:
             raise ValueError("SmartCare not available in current AC mode")
-        await self._set_enum_state(STATE_SMARTCARE, MODE_ON if status else MODE_OFF, "wModeCtrl")
+        key = self._resolve_key(STATE_SMARTCARE)
+        value = self.model_info.enum_value(key, MODE_ON if status else MODE_OFF)
+        if value is None:
+            raise ValueError(f"Unsupported enum value for {key}: {status}")
+        await self.set("basicCtrl", "Set", key=key, value=value)
 
     async def set_horizontal_swing_mode(self, mode):
         """Set the horizontal swing to a value from the `ACHSwingMode` enum.""" 
