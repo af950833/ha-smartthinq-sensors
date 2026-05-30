@@ -33,6 +33,7 @@ WIND_MODE_TOKENS = {
     "iceValley": ("ICEVALLEY",),
     "flowLongPower": ("LONGPOWER", "FLOW_LONG_POWER"),
 }
+LONGPOWER_LABEL = "롱파워"
 OP_MODE_TOKENS = {
     "COOL": ("COOL",),
     "DRY": ("DRY",),
@@ -407,6 +408,8 @@ class AirConditionerDevice(Device):
             name = key.rsplit(".", 1)[-1]
             if name in WIND_MODE_SELECT_EXCLUDED:
                 continue
+            if name == "flowLongPower" and self._longpower_wind_strength_value is not None:
+                continue
             support_tokens = WIND_MODE_TOKENS.get(name, (name.upper(),))
             supported = self._support_matches(support_options, *support_tokens)
             if supported is False:
@@ -428,6 +431,8 @@ class AirConditionerDevice(Device):
         """Translate LG wind strength enum text to a HA fan label."""
         if not value:
             return None
+        if "LONGPOWER" in value:
+            return LONGPOWER_LABEL
         if any(token in value for token in ("SLOW", "AUTO", "POWER", "LONGPOWER")):
             return None
         if "LOW_MID" in value or "MID_HIGH" in value:
@@ -463,12 +468,25 @@ class AirConditionerDevice(Device):
             priority = self._fan_value_priority(enum_value)
             if priority > candidates.get(label, (-1, ""))[0]:
                 candidates[label] = (priority, encoded)
-        ordered = ["약풍", "중풍", "강풍"]
+        ordered = ["약풍", "중풍", "강풍", LONGPOWER_LABEL]
         return {
             label: candidates[label][1]
             for label in ordered
             if label in candidates
         }
+
+    @cached_property
+    def _longpower_wind_strength_value(self) -> str | None:
+        """Return the windStrength value for long power when the model exposes one."""
+        if not self._wind_strength_key:
+            return None
+        candidates: list[tuple[int, str]] = []
+        for encoded, enum_value in self._enum_options(self._wind_strength_key).items():
+            if "LONGPOWER" in enum_value:
+                candidates.append((self._fan_value_priority(enum_value), encoded))
+        if not candidates:
+            return None
+        return max(candidates)[1]
 
     @cached_property
     def _dual_fan_speed_map(self) -> dict[tuple[str, str], str]:
@@ -600,6 +618,14 @@ class AirConditionerDevice(Device):
         if value is None:
             raise ValueError(f"Unsupported enum value for {key}: {enum_name}")
         await self._set_enum_value(key, value, fallback_ctrl)
+
+    async def _set_enum_state_basic(self, state_key, enum_name: str):
+        """Set an enum state using basicCtrl even when another control is advertised."""
+        key = self._resolve_key(state_key)
+        value = self.model_info.enum_value(key, enum_name)
+        if value is None:
+            raise ValueError(f"Unsupported enum value for {key}: {enum_name}")
+        await self.set("basicCtrl", "Set", key=key, value=value)
 
     def _get_supported_operations(self):
         """Return the list of the ACOp Operations the device supports."""
@@ -1033,6 +1059,9 @@ class AirConditionerDevice(Device):
         """Set fan speed or special wind mode discovered from the model JSON."""
         if speed not in self.fan_speeds:
             raise ValueError(f"Invalid fan speed: {speed}")
+        if speed == LONGPOWER_LABEL and self._longpower_wind_strength_value is not None:
+            await self._set_longpower_mode(True)
+            return
         if speed in self._wind_mode_map:
             await self.set_wind_mode(speed)
             return
@@ -1051,13 +1080,19 @@ class AirConditionerDevice(Device):
         if current_mode != WIND_MODE_OFF:
             current_key = self._wind_mode_map.get(current_mode)
             if current_key is not None:
-                await self._set_enum_state(current_key, MODE_OFF, "wModeCtrl")
+                await self._set_enum_state_basic(current_key, MODE_OFF)
         if mode == WIND_MODE_OFF:
             return
         state_key = self._wind_mode_map[mode]
-        await self._set_enum_state(
-            state_key, MODE_ON, "wModeCtrl"
-        )
+        await self._set_enum_state_basic(state_key, MODE_ON)
+
+    async def _set_longpower_mode(self, status: bool):
+        """Set Ice Long Power using the ThinQ Web control value."""
+        if status:
+            speed_value = self._longpower_wind_strength_value
+            if speed_value is None:
+                raise ValueError("Long Power wind strength not supported")
+            await self._set_enum_value(self._wind_strength_key, speed_value, "basicCtrl")
 
     def _current_dual_fan_speeds(self) -> tuple[str | None, str | None]:
         """Return current left/right fan labels parsed from current wind strength."""
@@ -1597,6 +1632,11 @@ class AirConditionerStatus(DeviceStatus):
     @property
     def wind_mode(self):
         """Return current special wind mode."""
+        key = self._device._wind_strength_key
+        if key and (value := self.lookup_enum(key, True)) and "LONGPOWER" in value:
+            return LONGPOWER_LABEL
+        if self.lookup_enum("airState.wMode.flowLongPower", True) == MODE_ON:
+            return LONGPOWER_LABEL
         for label, key in self._device._wind_mode_map.items():
             if self.lookup_enum(key, True) == MODE_ON:
                 return label
