@@ -34,6 +34,11 @@ WIND_MODE_TOKENS = {
     "flowLongPower": ("LONGPOWER", "FLOW_LONG_POWER"),
 }
 LONGPOWER_LABEL = "롱파워"
+
+# ThinQ model data may advertise generic controls that the physical product does
+# not implement. Keep these narrowly scoped to models confirmed by diagnostics.
+DUAL_FAN_EXCLUDED_MODELS = {"PAC_910604_KR"}
+AUTODRY_EXCLUDED_MODELS = {"PAC_910604_KR"}
 OP_MODE_TOKENS = {
     "COOL": ("COOL",),
     "DRY": ("DRY",),
@@ -445,9 +450,16 @@ class AirConditionerDevice(Device):
             return "강풍"
         return None
 
-    @staticmethod
-    def _fan_value_priority(value: str) -> int:
+    def _fan_value_priority(self, value: str) -> int:
         """Prefer whole-unit or same left/right values over partial variants."""
+        if not self.model_info.is_info_v2:
+            if "CLEAN" in value:
+                return 5
+            if "LEFT" not in value and "RIGHT" not in value:
+                return 40
+            if "|" in value and "LEFT" in value and "RIGHT" in value:
+                return 20
+            return 10
         if "|" in value and "LEFT" in value and "RIGHT" in value:
             return 40
         if "CLEAN" in value:
@@ -455,6 +467,21 @@ class AirConditionerDevice(Device):
         if "LEFT" not in value and "RIGHT" not in value:
             return 30
         return 10
+
+    @property
+    def _is_dual_fan_excluded_model(self) -> bool:
+        """Return whether dual fan controls are invalid for this model."""
+        return self.device_info.model_name in DUAL_FAN_EXCLUDED_MODELS
+
+    @property
+    def _wind_strength_control_key(self) -> str:
+        """Return the protocol-specific control key for wind strength."""
+        return "basicCtrl" if self.model_info.is_info_v2 else "Control"
+
+    @cached_property
+    def _wind_direction_support_options(self) -> list[str]:
+        """Return wind-direction support from ThinQ1 or ThinQ2 model data."""
+        return self._support_options("wdir") or self._support_options("winddir")
 
     @cached_property
     def _fan_speed_map(self) -> dict[str, str]:
@@ -468,6 +495,19 @@ class AirConditionerDevice(Device):
             priority = self._fan_value_priority(enum_value)
             if priority > candidates.get(label, (-1, ""))[0]:
                 candidates[label] = (priority, encoded)
+        if not self.model_info.is_info_v2:
+            support_options = self._support_options("windstrength")
+            supported_labels = {
+                label
+                for option in support_options
+                if (label := self._fan_label_from_enum(option)) is not None
+            }
+            if supported_labels:
+                candidates = {
+                    label: candidate
+                    for label, candidate in candidates.items()
+                    if label in supported_labels
+                }
         ordered = ["약풍", "중풍", "강풍", LONGPOWER_LABEL]
         return {
             label: candidates[label][1]
@@ -856,7 +896,7 @@ class AirConditionerDevice(Device):
     @cached_property
     def dual_fan_speed_options(self):
         """Return dual fan speed options when the model exposes left/right fan pairs."""
-        if not self._dual_fan_speed_map:
+        if self._is_dual_fan_excluded_model or not self._dual_fan_speed_map:
             return []
         return [speed for speed in ("약풍", "중풍", "강풍") if speed in self.fan_speeds]
 
@@ -875,14 +915,20 @@ class AirConditionerDevice(Device):
     @cached_property
     def horizontal_swing_modes(self):
         """Return a list of available horizontal swing modes."""
-        if not self._supported_or_unknown(("wdir",), "LEFT_RIGHT"):
+        supported = self._support_matches(
+            self._wind_direction_support_options, "LEFT_RIGHT"
+        )
+        if supported is False:
             return []
         return self._get_property_values(STATE_WDIR_HSWING, ACHSwingMode)
 
     @cached_property
     def vertical_swing_modes(self):
         """Return a list of available vertical swing modes."""
-        if not self._supported_or_unknown(("wdir",), "UP_DOWN"):
+        supported = self._support_matches(
+            self._wind_direction_support_options, "UP_DOWN"
+        )
+        if supported is False:
             return []
         return self._get_property_values(STATE_WDIR_VSWING, ACVSwingMode)
 
@@ -923,6 +969,8 @@ class AirConditionerDevice(Device):
     @cached_property
     def is_autodry_supported(self):
         """Return if AutoDry mode is supported."""
+        if self.device_info.model_name in AUTODRY_EXCLUDED_MODELS:
+            return False
         return self._is_wind_mode_state_supported(STATE_AUTODRY)
 
     @cached_property
@@ -1068,7 +1116,9 @@ class AirConditionerDevice(Device):
         if self._wind_mode_map and self._status.wind_mode != WIND_MODE_OFF:
             await self.set_wind_mode(WIND_MODE_OFF)
         speed_value = self._fan_speed_map[speed]
-        await self._set_enum_value(self._wind_strength_key, speed_value, "basicCtrl")
+        await self._set_enum_value(
+            self._wind_strength_key, speed_value, self._wind_strength_control_key
+        )
 
     async def set_wind_mode(self, mode):
         """Set special wind mode discovered from ThinQ model data."""
@@ -1092,7 +1142,9 @@ class AirConditionerDevice(Device):
             speed_value = self._longpower_wind_strength_value
             if speed_value is None:
                 raise ValueError("Long Power wind strength not supported")
-            await self._set_enum_value(self._wind_strength_key, speed_value, "basicCtrl")
+            await self._set_enum_value(
+                self._wind_strength_key, speed_value, self._wind_strength_control_key
+            )
 
     def _current_dual_fan_speeds(self) -> tuple[str | None, str | None]:
         """Return current left/right fan labels parsed from current wind strength."""
@@ -1122,7 +1174,9 @@ class AirConditionerDevice(Device):
             raise ValueError(f"Invalid fan side: {side}")
         if (speed_value := self._dual_fan_speed_map.get((left, right))) is None:
             raise ValueError(f"Unsupported dual fan speed combination: {left}/{right}")
-        await self._set_enum_value(self._wind_strength_key, speed_value, "basicCtrl")
+        await self._set_enum_value(
+            self._wind_strength_key, speed_value, self._wind_strength_control_key
+        )
 
     async def set_smartcare(self, status: bool):
         """Set SmartCare on or off."""
