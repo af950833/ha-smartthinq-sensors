@@ -43,7 +43,7 @@ DEFAULT_FREEZER_RANGE_F = [-8, 6]
 
 REFR_ROOT_DATA = "refState"
 CTRL_BASIC = ["Control", "basicCtrl"]
-ENERGY_TODAY_POLL_INTERVAL = 300  # 5 minutes
+ENERGY_TODAY_POLL_INTERVAL = 600  # 10 minutes
 ENERGY_MONTH_POLL_INTERVAL = 3600  # 60 minutes
 
 STATE_ECO_FRIENDLY = ["EcoFriendly", "ecoFriendly"]
@@ -425,6 +425,7 @@ class RefrigeratorDevice(Device):
             f"service/fridge/{self.device_info.device_id}/energy-history"
             f"?period={period}&startDate={start_date}&endDate={end_date}"
         )
+        await self._client.prepare_energy_history_request()
         return await self._client.session.get2(path)
 
     async def get_energy_today_usage(self):
@@ -486,8 +487,6 @@ class RefrigeratorDevice(Device):
             >= ENERGY_TODAY_POLL_INTERVAL
         )
         if today_due:
-            if self._last_energy_today_poll is None:
-                self._client.refresh_client_id()
             self._last_energy_today_poll = now
             if energy_usage := await self.get_energy_today_usage():
                 self._energy_usage.update(energy_usage)
@@ -500,8 +499,6 @@ class RefrigeratorDevice(Device):
         )
         if not month_due:
             return
-        if self._last_energy_month_poll is None:
-            self._client.refresh_client_id()
         self._last_energy_month_poll = now
         if energy_usage := await self.get_energy_month_usage():
             self._energy_usage.update(energy_usage)

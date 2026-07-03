@@ -158,7 +158,7 @@ TEMP_STEP_WHOLE = 1.0
 TEMP_STEP_HALF = 0.5
 
 ADD_FEAT_POLL_INTERVAL = 300  # 5 minutes
-ENERGY_USAGE_POLL_INTERVAL = 300  # 5 minutes
+ENERGY_USAGE_POLL_INTERVAL = 600  # 10 minutes
 
 LIGHTING_DISPLAY_OFF = "0"
 LIGHTING_DISPLAY_ON = "1"
@@ -1355,6 +1355,7 @@ class AirConditionerDevice(Device):
                 f"?period=day&startDate={start_date}&endDate={end_date}"
                 "&saveEnergyYn=N"
             )
+            await self._client.prepare_energy_history_request()
             return await self._client.session.get2(path)
 
         try:
@@ -1413,13 +1414,10 @@ class AirConditionerDevice(Device):
         if not self._client.monitoring_active:
             return
         now = datetime.now()
-        first_energy_poll = self._last_energy_usage_poll is None
         if self._last_energy_usage_poll is not None:
             diff = (now - self._last_energy_usage_poll).total_seconds()
             if diff < ENERGY_USAGE_POLL_INTERVAL:
                 return
-        if first_energy_poll:
-            self._client.refresh_client_id()
         self._last_energy_usage_poll = now
         if energy_usage := await self.get_energy_usage():
             self._energy_usage.update(energy_usage)
