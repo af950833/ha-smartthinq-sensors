@@ -232,6 +232,16 @@ class RefrigeratorDevice(Device):
                     return None
         return None
 
+    @staticmethod
+    def _temp_value(value):
+        """Return numeric temperature value from direct ThinQ Web snapshots."""
+        try:
+            if value in (None, StateOptions.NONE, StateOptions.UNKNOWN, "IGNORE"):
+                return None
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
     def get_fridge_temps(self, unit=None, unit_key=None):
         """Get valid values for fridge temp."""
         self._set_temp_unit(unit)
@@ -341,7 +351,10 @@ class RefrigeratorDevice(Device):
         if self._status.temp_fridge is None:
             return
 
-        if (temp_key := self._get_temp_key(self._fridge_temps, temp)) is None:
+        temp_key = self._get_temp_key(self._fridge_temps, temp)
+        if temp_key is None and self.model_info.is_info_v2:
+            temp_key = self._temp_value(temp)
+        if temp_key is None:
             raise ValueError(f"Target fridge temperature not valid: {temp}")
         if not self.model_info.is_info_v2:
             temp_key = str(temp_key)
@@ -358,7 +371,10 @@ class RefrigeratorDevice(Device):
         if self._status.temp_freezer is None:
             return
 
-        if (temp_key := self._get_temp_key(self._freezer_temps, temp)) is None:
+        temp_key = self._get_temp_key(self._freezer_temps, temp)
+        if temp_key is None and self.model_info.is_info_v2:
+            temp_key = self._temp_value(temp)
+        if temp_key is None:
             raise ValueError(f"Target freezer temperature not valid: {temp}")
         if not self.model_info.is_info_v2:
             temp_key = str(temp_key)
@@ -620,9 +636,11 @@ class RefrigeratorStatus(DeviceStatus):
             index = 1
         temp_key = self._get_temp_key(STATE_FRIDGE_TEMP[index])
         if temp_key is None:
-            return None
+            return self._device._temp_value(self._data.get(STATE_FRIDGE_TEMP[index]))
         temp_lists = self._device.get_fridge_temps(self._get_temp_unit(), unit_key)
-        return self.to_int_or_none(temp_lists.get(temp_key))
+        return self.to_int_or_none(temp_lists.get(temp_key)) or self._device._temp_value(
+            self._data.get(STATE_FRIDGE_TEMP[index])
+        )
 
     @property
     def temp_freezer(self):
@@ -634,9 +652,11 @@ class RefrigeratorStatus(DeviceStatus):
             index = 1
         temp_key = self._get_temp_key(STATE_FREEZER_TEMP[index])
         if temp_key is None:
-            return None
+            return self._device._temp_value(self._data.get(STATE_FREEZER_TEMP[index]))
         temp_lists = self._device.get_freezer_temps(self._get_temp_unit(), unit_key)
-        return self.to_int_or_none(temp_lists.get(temp_key))
+        return self.to_int_or_none(temp_lists.get(temp_key)) or self._device._temp_value(
+            self._data.get(STATE_FREEZER_TEMP[index])
+        )
 
     @property
     def temp_unit(self):
