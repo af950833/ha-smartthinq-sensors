@@ -127,6 +127,7 @@ TOKEN_EXP_LIMIT = 60  # will expire within 60 seconds
 MIN_TIME_BETWEEN_UPDATE = 25
 MIN_TIME_BETWEEN_SSE_RECONNECT = 60
 MIN_TIME_BETWEEN_SSE_EXTEND = 20 * 60
+MIN_TIME_BETWEEN_ENERGY_HISTORY = 20
 SSE_RETRY_DELAY_MAX = 30 * 60
 
 _LG_SSL_CIPHERS = (
@@ -1377,6 +1378,8 @@ class ClientAsync:
         self._last_device_update = datetime.now(timezone.utc)
         self._last_snapshot_refresh = datetime.min.replace(tzinfo=timezone.utc)
         self._lock = asyncio.Lock()
+        self._energy_history_lock = asyncio.Lock()
+        self._last_energy_history_request = datetime.min.replace(tzinfo=timezone.utc)
         # The last list of devices we got from the server. This is the
         # raw JSON list data describing the devices.
         self._devices = None
@@ -1460,6 +1463,16 @@ class ClientAsync:
         if not self._auth:
             return None
         return self._auth.gateway.core._get_client_id(self._auth.user_number, True)
+
+    async def prepare_energy_history_request(self) -> None:
+        """Serialize ThinQ Web energy-history calls and refresh client ID."""
+        async with self._energy_history_lock:
+            now = datetime.now(timezone.utc)
+            diff = (now - self._last_energy_history_request).total_seconds()
+            if diff < MIN_TIME_BETWEEN_ENERGY_HISTORY:
+                await asyncio.sleep(MIN_TIME_BETWEEN_ENERGY_HISTORY - diff)
+            self.refresh_client_id()
+            self._last_energy_history_request = datetime.now(timezone.utc)
 
     @property
     def session(self) -> Session:
