@@ -516,6 +516,13 @@ AIR_PURIFIER_SENSORS: tuple[ThinQSensorEntityDescription, ...] = (
 )
 DEHUMIDIFIER_SENSORS: tuple[ThinQSensorEntityDescription, ...] = (
     ThinQSensorEntityDescription(
+        key=DehumidifierFeatures.ENERGY_CURRENT,
+        name="Energy current",
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.POWER,
+        native_unit_of_measurement=UnitOfPower.WATT,
+    ),
+    ThinQSensorEntityDescription(
         key=DehumidifierFeatures.HUMIDITY,
         name="Current Humidity",
         state_class=SensorStateClass.MEASUREMENT,

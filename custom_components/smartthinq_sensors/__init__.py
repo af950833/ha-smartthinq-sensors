@@ -59,6 +59,7 @@ from .wideq.core_exceptions import (
     MonitorUnavailableError,
     NotConnectedError,
     TokenError,
+    UseOfficialAPIError,
 )
 from .wideq.device import Device as ThinQDevice
 
@@ -79,6 +80,7 @@ AUTH_RETRY = "auth_retry"
 MAX_AUTH_RETRY = 4
 
 MAX_DISC_COUNT = 4
+MAX_AUTH_FAILURE_TIME = 600  # 10 minutes in seconds
 KEEP_STATE_ON_REFRESH_ERROR_TYPES = (DeviceType.REFRIGERATOR, *WM_DEVICE_TYPES)
 SIGNAL_RELOAD_ENTRY = f"{DOMAIN}_reload_entry"
 LEGACY_CONF_USE_HA_SESSION = "use_ha_session"
@@ -312,6 +314,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         UNSUPPORTED_DEVICES: unsupported_devices,
         DISCOVERED_DEVICES: discovered_devices,
     }
+    await client.start_monitoring()
     await hass.config_entries.async_forward_entry_setups(entry, SMARTTHINQ_PLATFORMS)
 
     start_devices_discovery(hass, entry, client)
@@ -359,6 +362,9 @@ class LGEDevice:
         self._control_refresh_task: asyncio.Task | None = None
         self._disc_count = 0
         self._available = True
+        self._auth_failure_start_time: datetime | None = None
+        self._auth_blocked = False
+        self._monitor_unsub: Callable[[], None] | None = None
 
     @property
     def available(self) -> bool:
@@ -437,11 +443,20 @@ class LGEDevice:
 
         # Create status update coordinator
         await self._create_coordinator()
+        self._monitor_unsub = self._device.client.add_monitor_callback(
+            self._device.device_info.device_id, self._async_monitor_updated
+        )
 
         # Initialize device features
         _ = self._state.device_features
 
         return True
+
+    @callback
+    def _async_monitor_updated(self, _snapshot: dict) -> None:
+        """Refresh HA state after ThinQ Web SSE updated the cache."""
+        if self._coordinator:
+            self._hass.async_create_task(self._coordinator.async_request_refresh())
 
     @callback
     def async_set_updated(self):
@@ -490,6 +505,15 @@ class LGEDevice:
 
     async def _async_state_update(self):
         """Update device state."""
+        # If device is blocked due to auth failure, skip API calls
+        if self._auth_blocked:
+            _LOGGER.debug(
+                "Device %s is blocked due to auth failure, skipping API call. "
+                "User must manually resolve the issue.",
+                self._name,
+            )
+            return
+
         _LOGGER.debug("Updating ThinQ device %s", self._name)
         if self._disc_count < MAX_DISC_COUNT:
             self._disc_count += 1
@@ -530,11 +554,61 @@ class LGEDevice:
             self._state = self._device.reset_status()
             return
 
-        except InvalidCredentialError:
-            # If we receive invalid credential, we reload integration
-            # to provide proper notification
-            async_dispatcher_send(self._hass, SIGNAL_RELOAD_ENTRY)
+        except (InvalidCredentialError, UseOfficialAPIError):
+            # Track auth failure time and block if exceeding threshold
+            if self._auth_failure_start_time is None:
+                self._auth_failure_start_time = datetime.now(timezone.utc)
+                _LOGGER.warning(
+                    "First auth failure detected for device %s at %s",
+                    self._name,
+                    self._auth_failure_start_time,
+                )
+            else:
+                elapsed = (datetime.now(timezone.utc) - self._auth_failure_start_time).total_seconds()
+                if elapsed >= MAX_AUTH_FAILURE_TIME:
+                    # Exceeded 10 minutes, block device
+                    self._auth_blocked = True
+                    self._available = False
+                    self._state = self._device.reset_status()
+                    _LOGGER.error(
+                        "Device %s blocked due to auth failure for %.0f seconds. "
+                        "This may be due to new Terms of Service requiring acceptance "
+                        "or LG requiring official API usage. "
+                        "Please check the LG ThinQ app on your mobile device. "
+                        "After resolving the issue, reload the SmartThinQ integration.",
+                        self._name,
+                        elapsed,
+                    )
+                    # Send persistent notification
+                    persistent_notification.async_create(
+                        self._hass,
+                        f"Device '{self._name}' has been blocked due to authentication failure. "
+                        f"This may be caused by new LG ThinQ Terms of Service requiring acceptance "
+                        f"or LG requiring official API usage. "
+                        f"Please open the LG ThinQ app on your mobile device and accept any new terms. "
+                        f"After resolving the issue, reload the SmartThinQ integration to unblock the device.",
+                        title="SmartThinQ Auth Failure",
+                        notification_id=f"smartthinq_auth_{self._device_id}",
+                    )
+                    return
+                else:
+                    _LOGGER.warning(
+                        "Auth failure ongoing for device %s (%.0f/%d seconds)",
+                        self._name,
+                        elapsed,
+                        MAX_AUTH_FAILURE_TIME,
+                    )
+            # Don't reload integration immediately, wait for threshold
             return
+
+        # Reset auth failure tracking on successful API call
+        if self._auth_failure_start_time is not None:
+            _LOGGER.info(
+                "Auth failure resolved for device %s after %.0f seconds",
+                self._name,
+                (datetime.now(timezone.utc) - self._auth_failure_start_time).total_seconds(),
+            )
+            self._auth_failure_start_time = None
 
         self._available = True
         if state:
