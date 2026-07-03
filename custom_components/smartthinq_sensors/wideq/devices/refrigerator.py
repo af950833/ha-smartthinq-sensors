@@ -10,7 +10,7 @@ import logging
 
 from ..const import RefrigeratorFeatures, StateOptions, TemperatureUnit
 from ..core_async import ClientAsync
-from ..core_exceptions import InvalidRequestError
+from ..core_exceptions import APIError
 from ..device import LABEL_BIT_OFF, LABEL_BIT_ON, Device, DeviceStatus
 from ..device_info import DeviceInfo
 from ..model_info import TYPE_ENUM
@@ -437,7 +437,7 @@ class RefrigeratorDevice(Device):
         try:
             today_history = await _get_history("hour", today, today)
             month_history = await _get_history("month", month_start, month_end)
-        except (ValueError, InvalidRequestError) as exc:
+        except (ValueError, APIError) as exc:
             _LOGGER.debug("Error calling refrigerator get_energy_usage method: %s", exc)
             return None
 
@@ -460,11 +460,16 @@ class RefrigeratorDevice(Device):
         """Update energy usage values on a slower polling interval."""
         if not self._energy_usage_supported:
             return
+        if not self._client.monitoring_active:
+            return
         now = datetime.now()
+        first_energy_poll = self._last_energy_usage_poll is None
         if self._last_energy_usage_poll is not None:
             diff = (now - self._last_energy_usage_poll).total_seconds()
             if diff < ENERGY_USAGE_POLL_INTERVAL:
                 return
+        if first_energy_poll:
+            self._client.refresh_client_id()
         self._last_energy_usage_poll = now
         if energy_usage := await self.get_energy_usage():
             self._energy_usage.update(energy_usage)
@@ -472,7 +477,7 @@ class RefrigeratorDevice(Device):
     async def poll(self) -> RefrigeratorStatus | None:
         """Poll the device's current state."""
 
-        res = await self._device_poll(REFR_ROOT_DATA, thinq2_query_device=True)
+        res = await self._device_poll(REFR_ROOT_DATA)
         if not res:
             return None
 

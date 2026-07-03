@@ -12,7 +12,7 @@ import logging
 from ..backports.functools import cached_property
 from ..const import AirConditionerFeatures, TemperatureUnit
 from ..core_async import ClientAsync
-from ..core_exceptions import InvalidRequestError
+from ..core_exceptions import APIError, InvalidRequestError
 from ..core_util import TempUnitConversion
 from ..device import Device, DeviceStatus
 from ..device_info import DeviceInfo
@@ -1359,7 +1359,7 @@ class AirConditionerDevice(Device):
 
         try:
             history = await _get_month_history(now.year, now.month)
-        except (ValueError, InvalidRequestError) as exc:
+        except (ValueError, APIError) as exc:
             _LOGGER.debug("Error calling get_energy_usage method: %s", exc)
             return None
         if not isinstance(history, list):
@@ -1389,7 +1389,7 @@ class AirConditionerDevice(Device):
             prev_year = now.year - 1 if now.month == 1 else now.year
             try:
                 prev_history = await _get_month_history(prev_year, prev_month)
-            except (ValueError, InvalidRequestError) as exc:
+            except (ValueError, APIError) as exc:
                 _LOGGER.debug("Error calling previous get_energy_usage method: %s", exc)
             else:
                 if isinstance(prev_history, list):
@@ -1410,11 +1410,16 @@ class AirConditionerDevice(Device):
         """Update energy usage values on a slower polling interval."""
         if not self._energy_usage_supported:
             return
+        if not self._client.monitoring_active:
+            return
         now = datetime.now()
+        first_energy_poll = self._last_energy_usage_poll is None
         if self._last_energy_usage_poll is not None:
             diff = (now - self._last_energy_usage_poll).total_seconds()
             if diff < ENERGY_USAGE_POLL_INTERVAL:
                 return
+        if first_energy_poll:
+            self._client.refresh_client_id()
         self._last_energy_usage_poll = now
         if energy_usage := await self.get_energy_usage():
             self._energy_usage.update(energy_usage)
@@ -1527,7 +1532,6 @@ class AirConditionerDevice(Device):
         res = await self._device_poll(
             additional_poll_interval_v1=ADD_FEAT_POLL_INTERVAL,
             additional_poll_interval_v2=ADD_FEAT_POLL_INTERVAL,
-            thinq2_query_device=True,
         )
         if not res:
             return None
@@ -1538,6 +1542,8 @@ class AirConditionerDevice(Device):
                 res[STATE_POWER_V1] = self._current_power
 
         self._status = AirConditionerStatus(self, res)
+        if not self._should_poll:
+            await self._update_energy_usage()
         # adjust temperature step
         if self._temperature_step == TEMP_STEP_WHOLE:
             self._adjust_temperature_step(self._status.target_temp)

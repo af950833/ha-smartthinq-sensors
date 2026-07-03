@@ -192,7 +192,6 @@ class WaterHeaterDevice(Device):
         """Poll the device's current state."""
         res = await self._device_poll(
             # additional_poll_interval_v1=ADD_FEAT_POLL_INTERVAL,
-            thinq2_query_device=True,
         )
         if not res:
             return None

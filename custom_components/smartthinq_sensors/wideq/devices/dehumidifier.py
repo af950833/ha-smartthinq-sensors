@@ -314,8 +314,17 @@ class DeHumidifierStatus(DeviceStatus):
             return None
         return self._update_feature(DehumidifierFeatures.WATER_TANK_FULL, value)
 
+    @property
+    def energy_current(self):
+        """Return current power usage."""
+        key = self._get_state_key(STATE_POWER)
+        if (value := self.to_int_or_none(self._data.get(key))) is None:
+            return None
+        return self._update_feature(DehumidifierFeatures.ENERGY_CURRENT, value, False)
+
     def _update_features(self):
         _ = [
+            self.energy_current,
             self.current_humidity,
             self.target_humidity,
             self.water_tank_full,
