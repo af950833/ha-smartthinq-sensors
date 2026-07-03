@@ -24,6 +24,7 @@ from urllib.parse import (
     urlparse,
 )
 import uuid
+import zlib
 
 import aiohttp
 from charset_normalizer import from_bytes
@@ -53,7 +54,6 @@ V2_APP_LEVEL = "PRD"
 V2_APP_OS = "browser"
 V2_APP_TYPE = "WEB"
 V2_APP_VER = "5.1.2600"
-V2_THINQ_APP_VER = "LG ThinQ/5.0.12120"
 V2_APP_ORIGIN = "app-web-browser"
 V2_WEB_REFERER = "https://my.lgthinq.com/"
 V2_WEB_USER_AGENT = (
@@ -62,12 +62,14 @@ V2_WEB_USER_AGENT = (
     "Chrome/125.0.0.0 Safari/537.36"
 )
 V2_CLIENT_ID_REFRESH_INTERVAL = 60 * 60
+V2_DASHBOARD_CLIENT_ID_SETTLE_DELAY = 2.0
 
 # new
 V2_GATEWAY_URL = "https://route.lgthinq.com:46030/v1/service/application/gateway-uri"
 V2_GATEWAY_URI_KEY = "uris"
 V2_NSCREEN_AUTH_REFRESH_URL = "https://kic-nscreen.lgthinq.com/v1/auth/refresh"
 V2_NSCREEN_AUTH_LOGIN_URL = "https://kic-nscreen.lgthinq.com/v1/auth/login"
+V2_NSCREEN_URL = "https://kic-nscreen.lgthinq.com"
 V2_WEB_USER_INFO_URL = (
     "https://kr.lid.lgemembers.com/realms/LGE-MP/"
     "protocol/lge-openid-connect/userinfo"
@@ -123,6 +125,9 @@ TOKEN_EXP_LIMIT = 60  # will expire within 60 seconds
 
 # minimum time between 2 consecutive call for device snapshot updates (in seconds)
 MIN_TIME_BETWEEN_UPDATE = 25
+MIN_TIME_BETWEEN_SSE_RECONNECT = 60
+MIN_TIME_BETWEEN_SSE_EXTEND = 20 * 60
+SSE_RETRY_DELAY_MAX = 30 * 60
 
 _LG_SSL_CIPHERS = (
     "DEFAULT:!aNULL:!eNULL:!MD5:!3DES:!DES:!RC4:!IDEA:!SEED:!aDSS:!SRP:!PSK"
@@ -307,7 +312,6 @@ class CoreAsync:
             "Accept": "application/json",
             "Content-type": "application/json;charset=UTF-8",
             "x-api-key": V2_API_KEY,
-            # "x-app-version": V2_THINQ_APP_VER,
             "x-client-id": client_id or V2_CLIENT_ID,
             "x-country-code": country,
             "x-language-code": language,
@@ -360,23 +364,36 @@ class CoreAsync:
 
         _LOGGER.debug("thinq2_get before: %s", url)
 
-        client_id = self._get_client_id(user_number)
-        async with self._get_session().get(
-            url=url,
-            headers=self._thinq2_headers(
-                client_id=client_id,
-                access_token=access_token,
-                user_number=user_number,
-                extra_headers=headers or {},
-                country=self._country,
-                language=self._language,
-            ),
-            timeout=self._timeout,
-            raise_for_status=False,
-        ) as resp:
-            out = await self._get_json_resp(resp)
+        out = None
+        for attempt in range(3):
+            client_id = self._get_client_id(user_number, attempt > 0)
+            async with self._get_session().get(
+                url=url,
+                headers=self._thinq2_headers(
+                    client_id=client_id,
+                    access_token=access_token,
+                    user_number=user_number,
+                    extra_headers=headers or {},
+                    country=self._country,
+                    language=self._language,
+                ),
+                timeout=self._timeout,
+                raise_for_status=False,
+            ) as resp:
+                out = await self._get_json_resp(resp)
 
-        _LOGGER.debug("thinq2_get after: %s", out)
+            if out.get("resultCode") not in ("9006", "9012"):
+                _LOGGER.debug("thinq2_get after: %s", out)
+                break
+
+            _LOGGER.info(
+                "Refreshing client ID and retrying GET after receiving msg 9006 or 9012: %s",
+                out,
+            )
+            if attempt < 2:
+                await asyncio.sleep(1.5 * (attempt + 1))
+        else:
+            _LOGGER.debug("thinq2_get retry after: %s", out)
 
         if "resultCode" not in out:
             raise exc.APIError("-1", out)
@@ -414,7 +431,31 @@ class CoreAsync:
         ) as resp:
             out = await self._get_json_resp(resp)
 
-        _LOGGER.debug("lgedm2_post after: %s", out)
+        if is_api_v2 and out.get("resultCode") in ("9006", "9012"):
+            _LOGGER.info(
+                "Refreshing client ID and retrying once after receiving msg 9006 or 9012: %s",
+                out,
+            )
+            client_id = self._get_client_id(user_number, True)
+            async with self._get_session().post(
+                url=url,
+                json=data,
+                headers=self._thinq2_headers(
+                    client_id=client_id,
+                    access_token=access_token,
+                    user_number=user_number,
+                    extra_headers=headers or {},
+                    country=self._country,
+                    language=self._language,
+                    security_key=True,
+                ),
+                timeout=self._timeout,
+                raise_for_status=False,
+            ) as resp:
+                out = await self._get_json_resp(resp)
+            _LOGGER.debug("lgedm2_post retry after: %s", out)
+        else:
+            _LOGGER.debug("lgedm2_post after: %s", out)
 
         return self._manage_lge_result(out, is_api_v2, user_number)
 
@@ -992,6 +1033,80 @@ class Session:
             self._auth.user_number,
         )
 
+    def _nscreen_headers(self, extra_headers: dict | None = None) -> dict:
+        """Return headers used by ThinQ Web NScreen monitoring APIs."""
+        headers = self._auth.gateway.core._thinq2_headers(
+            client_id=self._auth.gateway.core._web_client_id(),
+            access_token=self._auth.access_token,
+            user_number=self._auth.user_number,
+            country=self._auth.gateway.country,
+            language=self._auth.gateway.language,
+            extra_headers={
+                "x-api-key": V2_NSCREEN_API_KEY,
+                "x-origin": "webapp",
+                "x-thinq-app-type": "WEB",
+                "Referer": V2_WEB_REFERER,
+            },
+        )
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
+
+    async def nscreen_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        headers: dict | None = None,
+        timeout: aiohttp.ClientTimeout | None = None,
+        read_json: bool = True,
+    ) -> dict:
+        """Make a ThinQ Web NScreen request."""
+        url = urljoin(V2_NSCREEN_URL, path)
+        async with self._auth.gateway.core._get_session().request(
+            method,
+            url,
+            headers=self._nscreen_headers(headers),
+            timeout=timeout or self._auth.gateway.core._timeout,
+            raise_for_status=False,
+        ) as resp:
+            if not read_json:
+                await resp.read()
+                return {}
+            out = await self._auth.gateway.core._get_json_resp(resp)
+        if "resultCode" in out and out.get("resultCode") != "0000":
+            code = out.get("resultCode", "unknown")
+            message = out.get("result") or out.get("resultMessage") or out
+            if code in API2_ERRORS:
+                raise API2_ERRORS[code](message)
+            raise exc.APIError(message, code)
+        return out.get("result") or out or {}
+
+    async def register_monitor_client(self) -> dict:
+        """Register a ThinQ Web NScreen monitoring client."""
+        return await self.nscreen_request(
+            "POST",
+            "v1/web/register-client",
+            headers={"x-monitoring-format": "legacy"},
+        )
+
+    async def extend_monitor_client(self, connection_id: str, token: str) -> dict:
+        """Extend a ThinQ Web NScreen monitoring client."""
+        return await self.nscreen_request(
+            "PATCH",
+            f"v1/web/{connection_id}/extend-client",
+            headers={"x-monitoring-format": "legacy", "x-nscreen-token": token},
+        )
+
+    async def close_monitor_sse(self, connection_id: str, token: str) -> None:
+        """Close a ThinQ Web NScreen SSE connection."""
+        await self.nscreen_request(
+            "DELETE",
+            f"v1/web/{connection_id}/sse",
+            headers={"x-nscreen-token": token},
+            read_json=False,
+        )
+
     async def _get_homes(self) -> dict | None:
         """Get a dict of homes associated with the user's account."""
         if self._homes is not None:
@@ -1061,6 +1176,8 @@ class Session:
         Get a list of devices associated with the user's account.
         Return information about the devices based on dashboard API call.
         """
+        self._auth.gateway.core._get_client_id(self._auth.user_number, True)
+        await asyncio.sleep(V2_DASHBOARD_CLIENT_ID_SETTLE_DELAY)
         dashboard = await self.get2("service/application/dashboard")
         if not isinstance(dashboard, dict):
             _LOGGER.warning(
@@ -1232,10 +1349,6 @@ class Session:
         )
         return res["returnData"]
 
-    async def get_device_v2_settings(self, device_id):
-        """Get a device's settings based on api V2."""
-        return await self.get2(f"service/devices/{device_id}")
-
     async def delete_permission(self, device_id):
         """Delete permission on V1 device after a control command."""
         await self.post("rti/delControlPermission", {"deviceId": device_id})
@@ -1262,6 +1375,7 @@ class ClientAsync:
         self._session: Session | None = session
         self._connected = True
         self._last_device_update = datetime.now(timezone.utc)
+        self._last_snapshot_refresh = datetime.min.replace(tzinfo=timezone.utc)
         self._lock = asyncio.Lock()
         # The last list of devices we got from the server. This is the
         # raw JSON list data describing the devices.
@@ -1280,6 +1394,13 @@ class ClientAsync:
         # enable emulation mode for debug / test
         env_emulation = os.environ.get("thinq2_emulation", "") == "ENABLED"
         self._emulation = env_emulation or enable_emulation
+        self._monitor_task: asyncio.Task | None = None
+        self._monitor_callbacks: dict[str, list[Callable[[dict], None]]] = {}
+        self._monitor_connection_id: str | None = None
+        self._monitor_token: str | None = None
+        self._monitor_connected = False
+        self._last_monitor_update = datetime.min.replace(tzinfo=timezone.utc)
+        self._last_monitor_extend = datetime.min.replace(tzinfo=timezone.utc)
 
     def _load_emul_devices(self) -> dict | None:
         """This is used only for debug."""
@@ -1334,6 +1455,12 @@ class ClientAsync:
             return None
         return self._auth.gateway.core.client_id_created_on
 
+    def refresh_client_id(self) -> str | None:
+        """Force creation of a fresh client ID for subsequent APIv2 calls."""
+        if not self._auth:
+            return None
+        return self._auth.gateway.core._get_client_id(self._auth.user_number, True)
+
     @property
     def session(self) -> Session:
         """Return the Session object associated to this client."""
@@ -1362,6 +1489,149 @@ class ClientAsync:
             return DeviceInfo(self._devices[device_id])
         return None
 
+    def add_monitor_callback(
+        self, device_id: str, callback: Callable[[dict], None]
+    ) -> Callable[[], None]:
+        """Register a callback called when SSE updates a device snapshot."""
+        callbacks = self._monitor_callbacks.setdefault(device_id, [])
+        callbacks.append(callback)
+
+        def _remove() -> None:
+            if device_id not in self._monitor_callbacks:
+                return
+            try:
+                self._monitor_callbacks[device_id].remove(callback)
+            except ValueError:
+                return
+            if not self._monitor_callbacks[device_id]:
+                self._monitor_callbacks.pop(device_id, None)
+
+        return _remove
+
+    def get_cached_snapshot(self, device_id: str) -> dict | None:
+        """Return cached snapshot without performing a server refresh."""
+        if not self.monitoring_active and not self.dashboard_cache_fresh:
+            return None
+        if not self._devices or device_id not in self._devices:
+            return None
+        snapshot = self._devices[device_id].get("snapshot")
+        return snapshot.copy() if isinstance(snapshot, dict) else snapshot
+
+    @property
+    def dashboard_cache_fresh(self) -> bool:
+        """Return if dashboard snapshots were refreshed recently."""
+        diff = (datetime.now(timezone.utc) - self._last_snapshot_refresh).total_seconds()
+        return diff < MIN_TIME_BETWEEN_UPDATE * 2
+
+    @property
+    def monitoring_active(self) -> bool:
+        """Return if the ThinQ Web SSE monitor has a usable recent connection."""
+        if self._monitor_connected:
+            return True
+        diff = (datetime.now(timezone.utc) - self._last_monitor_update).total_seconds()
+        return diff < MIN_TIME_BETWEEN_SSE_RECONNECT
+
+    def invalidate_device_snapshot(self, device_id: str) -> None:
+        """Drop a cached device snapshot after a local control command."""
+        if self._devices and device_id in self._devices:
+            self._devices[device_id].pop("snapshot", None)
+        self._last_device_update = datetime.min.replace(tzinfo=timezone.utc)
+        self._last_snapshot_refresh = datetime.min.replace(tzinfo=timezone.utc)
+
+    def _notify_monitor_callbacks(self, device_id: str, snapshot: dict) -> None:
+        """Notify registered callbacks for an updated device snapshot."""
+        for callback in list(self._monitor_callbacks.get(device_id, [])):
+            try:
+                callback(snapshot)
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("ThinQ SSE monitor callback failed", exc_info=True)
+
+    @staticmethod
+    def _decode_sse_payload(data: str) -> dict | None:
+        """Decode a ThinQ Web SSE payload."""
+        if not data:
+            return None
+        decoded = data
+        try:
+            raw = base64.b64decode(data)
+            try:
+                decoded = zlib.decompress(raw, -zlib.MAX_WBITS).decode("utf-8")
+            except zlib.error:
+                decoded = raw.decode("utf-8")
+        except Exception:  # pylint: disable=broad-except
+            decoded = data
+        try:
+            return json.loads(decoded)
+        except json.JSONDecodeError:
+            _LOGGER.debug("ThinQ SSE payload is not JSON")
+            return None
+
+    @staticmethod
+    def _find_sse_device_id(payload: Any) -> str | None:
+        """Find a device id in an SSE payload."""
+        if isinstance(payload, dict):
+            for key in ("deviceId", "productId", "id"):
+                value = payload.get(key)
+                if isinstance(value, str):
+                    return value
+            for value in payload.values():
+                if found := ClientAsync._find_sse_device_id(value):
+                    return found
+        elif isinstance(payload, list):
+            for value in payload:
+                if found := ClientAsync._find_sse_device_id(value):
+                    return found
+        return None
+
+    @staticmethod
+    def _find_sse_snapshot(payload: Any) -> dict | None:
+        """Find a ThinQ snapshot-like dictionary in an SSE payload."""
+        if not isinstance(payload, dict):
+            return None
+        for path in (
+            ("data", "state", "reported"),
+            ("data", "snapshot", "state", "reported"),
+            ("data", "snapshot"),
+            ("state", "reported"),
+            ("snapshot", "state", "reported"),
+            ("snapshot",),
+            ("reported",),
+        ):
+            value: Any = payload
+            for key in path:
+                if not isinstance(value, dict) or key not in value:
+                    value = None
+                    break
+                value = value[key]
+            if isinstance(value, dict):
+                return value
+        monitoring = payload.get("monitoring") or payload.get("info")
+        if isinstance(monitoring, dict) and monitoring is not payload:
+            return ClientAsync._find_sse_snapshot(monitoring)
+        if any("." in key or key.endswith("State") for key in payload):
+            return payload
+        return None
+
+    def _update_device_snapshot_from_sse(self, payload: dict) -> None:
+        """Update cached device snapshot from a ThinQ Web SSE payload."""
+        event_payload = payload.get("monitoring") or payload.get("info") or payload
+        device_id = self._find_sse_device_id(event_payload)
+        snapshot = self._find_sse_snapshot(event_payload)
+        if not device_id or not snapshot:
+            _LOGGER.debug("ThinQ SSE event ignored, no device snapshot found")
+            return
+        if not self._devices or device_id not in self._devices:
+            _LOGGER.debug("ThinQ SSE event ignored for unknown device")
+            return
+        current = self._devices[device_id].get("snapshot")
+        if isinstance(current, dict):
+            current.update(snapshot)
+            snapshot = current
+        self._devices[device_id]["snapshot"] = snapshot
+        self._last_monitor_update = datetime.now(timezone.utc)
+        _LOGGER.debug("ThinQ SSE updated cached snapshot for device %s", device_id)
+        self._notify_monitor_callbacks(device_id, snapshot)
+
     @property
     def emulation(self) -> bool:
         """Return if emulation is enabled."""
@@ -1378,11 +1648,123 @@ class ClientAsync:
 
     async def close(self):
         """Close the active managed core http session."""
+        await self.stop_monitoring()
         if not self._connected:
             return
         self._connected = False
         self._session = None
         await self._auth.gateway.close()
+
+    async def start_monitoring(self) -> None:
+        """Start ThinQ Web SSE monitoring."""
+        if self._emulation or self._monitor_task:
+            return
+        self._monitor_task = asyncio.create_task(self._monitor_loop())
+
+    async def stop_monitoring(self) -> None:
+        """Stop ThinQ Web SSE monitoring."""
+        if self._monitor_task:
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._monitor_task = None
+        if self._monitor_connection_id and self._monitor_token and self._session:
+            try:
+                await self._session.close_monitor_sse(
+                    self._monitor_connection_id, self._monitor_token
+                )
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("Error closing ThinQ SSE monitor", exc_info=True)
+        self._monitor_connection_id = None
+        self._monitor_token = None
+        self._monitor_connected = False
+
+    async def _register_monitor_client(self) -> None:
+        """Register or extend the ThinQ Web SSE monitoring client."""
+        result = await self.session.register_monitor_client()
+        self._monitor_connection_id = result.get("connectionId")
+        self._monitor_token = result.get("nscreenToken") or result.get("jweToken")
+        self._last_monitor_extend = datetime.now(timezone.utc)
+        if not self._monitor_connection_id or not self._monitor_token:
+            raise exc.APIError("ThinQ SSE monitor registration failed", "sse")
+        _LOGGER.debug("ThinQ SSE monitor client registered")
+
+    async def _extend_monitor_client(self) -> None:
+        """Extend ThinQ Web SSE monitoring client registration."""
+        if not self._monitor_connection_id or not self._monitor_token:
+            return
+        diff = (
+            datetime.now(timezone.utc) - self._last_monitor_extend
+        ).total_seconds()
+        if diff < MIN_TIME_BETWEEN_SSE_EXTEND:
+            return
+        await self.session.extend_monitor_client(
+            self._monitor_connection_id, self._monitor_token
+        )
+        self._last_monitor_extend = datetime.now(timezone.utc)
+
+    async def _monitor_loop(self) -> None:
+        """Read ThinQ Web SSE monitoring events and update cached snapshots."""
+        retry_delay = MIN_TIME_BETWEEN_SSE_RECONNECT
+        while self._connected:
+            try:
+                await self.refresh_auth()
+                await self._register_monitor_client()
+                await self._read_monitor_events()
+                retry_delay = MIN_TIME_BETWEEN_SSE_RECONNECT
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # pylint: disable=broad-except
+                self._monitor_connected = False
+                _LOGGER.debug("ThinQ SSE monitor disconnected: %s", err)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, SSE_RETRY_DELAY_MAX)
+
+    async def _read_monitor_events(self) -> None:
+        """Open and consume the ThinQ Web SSE event stream."""
+        if not self._monitor_connection_id or not self._monitor_token:
+            return
+        headers = self.session._nscreen_headers(
+            {"x-nscreen-token": self._monitor_token, "Accept": "text/event-stream"}
+        )
+        url = urljoin(
+            V2_NSCREEN_URL, f"v1/web/{self._monitor_connection_id}/sse"
+        )
+        timeout = aiohttp.ClientTimeout(total=None, sock_read=None)
+        async with self._auth.gateway.core._get_session().get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            raise_for_status=False,
+        ) as resp:
+            if resp.status >= 400:
+                raise exc.APIError(f"ThinQ SSE monitor HTTP {resp.status}", resp.status)
+            _LOGGER.debug("ThinQ SSE monitor connected")
+            self._monitor_connected = True
+            event = ""
+            data_lines: list[str] = []
+            async for raw_line in resp.content:
+                await self._extend_monitor_client()
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    if event == "monitoring" and data_lines:
+                        data = "\n".join(data_lines)
+                        if payload := self._decode_sse_payload(data):
+                            self._update_device_snapshot_from_sse(payload)
+                    elif event == "expired":
+                        raise exc.TokenError()
+                    event = ""
+                    data_lines = []
+                    continue
+                if line.startswith(":"):
+                    continue
+                if line.startswith("event:"):
+                    event = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line[5:].strip())
+            self._monitor_connected = False
 
     def _check_connected(self):
         """Check that client is in connected status."""
@@ -1395,11 +1777,13 @@ class ClientAsync:
             call_time = datetime.now(timezone.utc)
             difference = (call_time - self._last_device_update).total_seconds()
             if difference <= MIN_TIME_BETWEEN_UPDATE:
-                return
+                return False
             await self._load_devices(True)
             self._last_device_update = call_time
+            self._last_snapshot_refresh = call_time
+            return True
 
-    async def refresh(self, refresh_gateway=False) -> None:
+    async def refresh(self, refresh_gateway=False, refresh_client_id=False) -> None:
         """Refresh client connection."""
         self._check_connected()
         if refresh_gateway:
@@ -1407,6 +1791,8 @@ class ClientAsync:
             self.auth.refresh_gateway(gateway)
         self._auth = await self.auth.refresh(True)
         self._session = self.auth.start_session()
+        if refresh_client_id:
+            self.refresh_client_id()
         await self._load_devices()
 
     async def refresh_auth(self) -> None:
@@ -1446,6 +1832,9 @@ class ClientAsync:
             update_clientid_callback=update_clientid_callback,
         )
         try:
+            # Do not let a restored HA config entry reuse a client ID that ThinQ
+            # may already have marked as automated before the first Web call.
+            core._get_client_id("web", True)
             gateway = await Gateway.discover(core)
             auth = Auth(gateway, refresh_token)
             client = cls(
@@ -1454,7 +1843,7 @@ class ClientAsync:
                 language=language,
                 enable_emulation=enable_emulation,
             )
-            await client.refresh()
+            await client.refresh(refresh_client_id=True)
         except Exception:  # pylint: disable=broad-except
             await core.close()
             raise

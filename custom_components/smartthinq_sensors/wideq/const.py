@@ -83,6 +83,7 @@ class AirPurifierFeatures(StrEnum):
 class DehumidifierFeatures(StrEnum):
     """Features for LG Dehumidifier devices."""
 
+    ENERGY_CURRENT = "energy_current"
     HUMIDITY = "humidity"
     TARGET_HUMIDITY = "target_humidity"
     WATER_TANK_FULL = "water_tank_full"

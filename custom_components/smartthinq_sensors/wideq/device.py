@@ -344,19 +344,16 @@ class Monitor:
         if self._platform_type != PlatformType.THINQ2:
             return None, False
 
-        snapshot = None
-        if query_device:
-            result = await self._client.session.get_device_v2_settings(self._device_id)
-            if "snapshot" in result:
-                snapshot = deepcopy(result["snapshot"])
-            return snapshot, False
+        snapshot = self._client.get_cached_snapshot(self._device_id)
+        if snapshot:
+            return deepcopy(snapshot), False
 
         await self._client.refresh_devices()
         if device_data := self._client.get_device(self._device_id):
             if dev_snapshot := device_data.snapshot:
-                snapshot = deepcopy(dev_snapshot)
+                return deepcopy(dev_snapshot), False
 
-        return snapshot, False
+        return None, False
 
     @staticmethod
     def decode_json(data: bytes) -> dict[str, Any]:
@@ -574,6 +571,8 @@ class Device:
             value,
             ctrl_path=ctrl_path,
         )
+        if not self._client.monitoring_active:
+            self._client.invalidate_device_snapshot(self._device_info.device_id)
 
     def _prepare_command(self, ctrl_key, command, key, value):
         """
@@ -703,12 +702,6 @@ class Device:
         if self._client.emulation:
             query_device = False
 
-        if query_device:
-            try:
-                await self._pre_update_v2()
-            except Exception as exc:  # pylint: disable=broad-except
-                _LOGGER.debug("Error calling pre_update function: %s", exc)
-
         return await self._mon.refresh(query_device)
 
     async def _additional_poll(self, poll_interval: int):
@@ -788,7 +781,7 @@ class Device:
             if not snapshot:
                 return None
             # do additional poll
-            if additional_poll_interval_v2 > 0:
+            if additional_poll_interval_v2 > 0 and self._client.emulation:
                 await self._additional_poll(additional_poll_interval_v2)
             return self._model_info.decode_snapshot(snapshot, snapshot_key)
 
