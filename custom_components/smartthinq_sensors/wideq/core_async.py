@@ -1527,7 +1527,7 @@ class ClientAsync:
             return None
         if not self._devices or device_id not in self._devices:
             return None
-        snapshot = self._devices[device_id].get("snapshot")
+        snapshot = DeviceInfo(self._devices[device_id]).snapshot
         return snapshot.copy() if isinstance(snapshot, dict) else snapshot
 
     @property

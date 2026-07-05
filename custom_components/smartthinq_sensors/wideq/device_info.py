@@ -7,6 +7,7 @@ from typing import Any
 from .const import StateOptions
 
 KEY_DEVICE_ID = "deviceId"
+SNAPSHOT_ROOT_KEYS = ("refState",)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -259,4 +260,15 @@ class DeviceInfo:
     @property
     def snapshot(self) -> dict[str, Any] | None:
         """Return the snapshot data associated to the device."""
-        return self._data.get("snapshot")
+        snapshot = self._data.get("snapshot")
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        else:
+            snapshot = snapshot.copy()
+
+        for root_key in SNAPSHOT_ROOT_KEYS:
+            root_data = self._data.get(root_key)
+            if isinstance(root_data, dict) and root_key not in snapshot:
+                snapshot[root_key] = root_data
+
+        return snapshot or None
