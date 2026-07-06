@@ -191,13 +191,63 @@ class RefrigeratorDevice(Device):
     def _get_temps_v2(self, key, unit_key=None):
         """Get valid values for temps for V2 models"""
         if unit_key:
-            if ref_key := self.model_info.target_key(key, unit_key, "tempUnit"):
+            if ref_key := self._get_target_temp_key(key, unit_key):
                 key = ref_key
         value_type = self.model_info.value_type(key)
         if not value_type or value_type != TYPE_ENUM:
-            return {}
+            return self._get_value_mapping_options(key)
         temp_values = self.model_info.value(key).options
         return {k: v for k, v in temp_values.items() if v != "IGNORE"}
+
+    def _model_value_info(self, key):
+        """Return raw model value info from Value or MonitoringValue sections."""
+        model_data = getattr(self.model_info, "_data", None)
+        if not isinstance(model_data, dict):
+            return None
+        for section in ("Value", "MonitoringValue"):
+            values = model_data.get(section)
+            if isinstance(values, dict) and isinstance(values.get(key), dict):
+                return values[key]
+        return None
+
+    def _get_target_temp_key(self, key, unit_key):
+        """Return the unit-specific temperature mapping key for V2 models."""
+        if ref_key := self.model_info.target_key(key, unit_key, "tempUnit"):
+            return ref_key
+
+        value_info = self._model_value_info(key)
+        if not value_info:
+            return None
+        target_key = value_info.get("target_key") or value_info.get("targetKey")
+        if not isinstance(target_key, dict):
+            return None
+
+        temp_unit_targets = target_key.get("tempUnit")
+        if isinstance(temp_unit_targets, dict):
+            return temp_unit_targets.get(unit_key)
+        return target_key.get(unit_key)
+
+    def _get_value_mapping_options(self, key):
+        """Return enum-like options from raw model value mappings."""
+        value_info = self._model_value_info(key)
+        if not value_info:
+            return {}
+        value_mapping = value_info.get("value_mapping") or value_info.get(
+            "valueMapping"
+        )
+        if not isinstance(value_mapping, dict):
+            return {}
+
+        options = {}
+        for raw_value, mapped_value in value_mapping.items():
+            if isinstance(mapped_value, dict):
+                label = mapped_value.get("label")
+            else:
+                label = mapped_value
+            if label in (None, "", "IGNORE"):
+                continue
+            options[str(raw_value)] = str(label)
+        return options
 
     @staticmethod
     def _get_temp_ranges(temps):
