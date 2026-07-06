@@ -1584,7 +1584,7 @@ class AirConditionerStatus(DeviceStatus):
         """Get current operation."""
         if self._operation is None:
             key = self._get_state_key(STATE_OPERATION)
-            operation = self.lookup_enum(key, True)
+            operation, _ = self.lookup_enum_with_raw(key, True)
             if not operation:
                 return None
             self._operation = operation
@@ -1647,7 +1647,8 @@ class AirConditionerStatus(DeviceStatus):
     def operation_mode(self):
         """Return current device operation mode."""
         key = self._get_state_key(STATE_OPERATION_MODE)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         try:
             return ACMode(value).name
@@ -1671,7 +1672,8 @@ class AirConditionerStatus(DeviceStatus):
         key = self._device._wind_strength_key
         if not key:
             return None
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         return self._device._fan_label_from_enum(value)
 
@@ -1691,12 +1693,17 @@ class AirConditionerStatus(DeviceStatus):
     def wind_mode(self):
         """Return current special wind mode."""
         key = self._device._wind_strength_key
-        if key and (value := self.lookup_enum(key, True)) and "LONGPOWER" in value:
+        value = None
+        if key:
+            value, _ = self.lookup_enum_with_raw(key, True)
+        if value and "LONGPOWER" in value:
             return LONGPOWER_LABEL
-        if self.lookup_enum("airState.wMode.flowLongPower", True) == MODE_ON:
+        value, _ = self.lookup_enum_with_raw("airState.wMode.flowLongPower", True)
+        if value == MODE_ON:
             return LONGPOWER_LABEL
         for label, key in self._device._wind_mode_map.items():
-            if self.lookup_enum(key, True) == MODE_ON:
+            value, _ = self.lookup_enum_with_raw(key, True)
+            if value == MODE_ON:
                 return label
         return WIND_MODE_OFF
 
@@ -1704,7 +1711,8 @@ class AirConditionerStatus(DeviceStatus):
     def horizontal_swing_mode(self):
         """Return current horizontal swing mode."""
         key = self._get_state_key(STATE_WDIR_HSWING)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         try:
             return ACHSwingMode(value).name
@@ -1715,7 +1723,8 @@ class AirConditionerStatus(DeviceStatus):
     def is_horizontal_swing_on(self):
         """Return current horizontal swing mode."""
         key = self._get_state_key(STATE_WDIR_HSWING)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         return value == MODE_ON
 
@@ -1723,7 +1732,8 @@ class AirConditionerStatus(DeviceStatus):
     def vertical_swing_mode(self):
         """Return current vertical step mode."""
         key = self._get_state_key(STATE_WDIR_VSWING)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         try:
             return ACVSwingMode(value).name
@@ -1734,7 +1744,8 @@ class AirConditionerStatus(DeviceStatus):
     def is_vertical_swing_on(self):
         """Return current vertical swing mode."""
         key = self._get_state_key(STATE_WDIR_VSWING)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         return value == MODE_ON
 

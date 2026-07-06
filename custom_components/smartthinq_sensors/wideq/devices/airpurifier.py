@@ -213,7 +213,7 @@ class AirPurifierStatus(DeviceStatus):
         """Get current operation."""
         if self._operation is None:
             key = self._get_state_key(STATE_OPERATION)
-            operation = self.lookup_enum(key, True)
+            operation, _ = self.lookup_enum_with_raw(key, True)
             if not operation:
                 return None
             self._operation = operation
@@ -250,7 +250,8 @@ class AirPurifierStatus(DeviceStatus):
     def operation_mode(self):
         """Return current device operation mode."""
         key = self._get_state_key(STATE_OPERATION_MODE)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         try:
             return AirPurifierMode(value).name
@@ -261,7 +262,8 @@ class AirPurifierStatus(DeviceStatus):
     def fan_speed(self):
         """Return current fan speed."""
         key = self._get_state_key(STATE_WIND_STRENGTH)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         try:
             return AirPurifierFanSpeed(value).name
@@ -272,7 +274,8 @@ class AirPurifierStatus(DeviceStatus):
     def fan_preset(self):
         """Return current fan preset."""
         key = self._get_state_key(STATE_WIND_STRENGTH)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         try:
             return AirPurifierFanPreset(value).name

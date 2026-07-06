@@ -32,6 +32,19 @@ WM_SUB_KEYS = {"mini": "miniState", "Sub": "SubState"}
 
 POWER_STATUS_KEY = ["State", "state"]
 
+WM_RAW_STATE_MAP = {
+    "POWEROFF": STATE_WM_POWER_OFF,
+    "POWER_OFF": STATE_WM_POWER_OFF,
+    "OFF": STATE_WM_POWER_OFF,
+    "INITIAL": STATE_WM_INITIAL,
+    "POWER_ON": STATE_WM_INITIAL,
+    "PAUSE": STATE_WM_PAUSE,
+    "PAUSED": STATE_WM_PAUSE,
+    "END": STATE_WM_END[0],
+    "COMPLETE": STATE_WM_END[1],
+    "COMPLETED": STATE_WM_END[1],
+}
+
 CMD_POWER_OFF = [[None, "WMControl"], ["PowerOff", "WMOff"], [None, None]]
 CMD_WAKE_UP = [[None, "WMWakeup"], ["OperationWakeUp", "WMWakeup"], [None, None]]
 CMD_PAUSE = [[None, "WMControl"], ["OperationStop", "WMStop"], [None, None]]
@@ -882,10 +895,13 @@ class WMStatus(DeviceStatus):
         """Get current run state."""
         if not self._run_state:
             curr_key = self._get_data_key(self._getkeys(POWER_STATUS_KEY))
-            state = self.lookup_enum(curr_key)
+            state, raw_state = self.lookup_enum_with_raw(curr_key)
             if not state:
-                self._internal_run_state = None
-                self._run_state = STATE_WM_POWER_OFF
+                self._internal_run_state = raw_state
+                if isinstance(raw_state, str) and raw_state:
+                    self._run_state = WM_RAW_STATE_MAP.get(raw_state, raw_state)
+                else:
+                    self._run_state = STATE_WM_POWER_OFF
             else:
                 self._internal_run_state = self._data[curr_key]
                 self._run_state = state
@@ -899,9 +915,12 @@ class WMStatus(DeviceStatus):
             if not (key := self.get_model_info_key(keys)):
                 return None
             run_state = self._get_run_state()
-            state = self.lookup_enum(key)
+            state, raw_state = self.lookup_enum_with_raw(key)
             if not state:
-                self._pre_state = STATE_WM_POWER_OFF
+                if isinstance(raw_state, str) and raw_state:
+                    self._pre_state = WM_RAW_STATE_MAP.get(raw_state, raw_state)
+                else:
+                    self._pre_state = STATE_WM_POWER_OFF
             elif state == run_state:
                 self._pre_state = self._device.pre_state
             else:
@@ -915,9 +934,9 @@ class WMStatus(DeviceStatus):
             keys = self._getkeys(["ProcessState", "processState"])
             if not (key := self.get_model_info_key(keys)):
                 return None
-            state = self.lookup_enum(key)
+            state, raw_state = self.lookup_enum_with_raw(key)
             if not state:
-                self._process_state = StateOptions.NONE
+                self._process_state = raw_state or StateOptions.NONE
             else:
                 self._process_state = state
         return self._process_state

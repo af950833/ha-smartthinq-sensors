@@ -232,7 +232,7 @@ class DeHumidifierStatus(DeviceStatus):
         """Get current operation."""
         if self._operation is None:
             key = self._get_state_key(STATE_OPERATION)
-            operation = self.lookup_enum(key, True)
+            operation, _ = self.lookup_enum_with_raw(key, True)
             if not operation:
                 return None
             self._operation = operation
@@ -269,7 +269,8 @@ class DeHumidifierStatus(DeviceStatus):
     def operation_mode(self):
         """Return current device operation mode."""
         key = self._get_state_key(STATE_OPERATION_MODE)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         try:
             return DHumMode(value).name
@@ -280,7 +281,8 @@ class DeHumidifierStatus(DeviceStatus):
     def fan_speed(self):
         """Return current fan speed."""
         key = self._get_state_key(STATE_WIND_STRENGTH)
-        if (value := self.lookup_enum(key, True)) is None:
+        value, _ = self.lookup_enum_with_raw(key, True)
+        if value is None:
             return None
         try:
             return DHumFanSpeed(value).name

@@ -19,6 +19,15 @@ STATE_DISHWASHER_ERROR_NO_ERROR = [
     "No_Error",
 ]
 
+DISHWASHER_RAW_STATE_MAP = {
+    "POWEROFF": STATE_DISHWASHER_POWER_OFF,
+    "POWER_OFF": STATE_DISHWASHER_POWER_OFF,
+    "OFF": STATE_DISHWASHER_POWER_OFF,
+    "END": STATE_DISHWASHER_END[0],
+    "COMPLETE": STATE_DISHWASHER_END[1],
+    "COMPLETED": STATE_DISHWASHER_END[1],
+}
+
 BIT_FEATURES = {
     WashDeviceFeatures.AUTODOOR: ["AutoDoor", "autoDoor"],
     WashDeviceFeatures.CHILDLOCK: ["ChildLock", "childLock"],
@@ -84,9 +93,14 @@ class DishWasherStatus(DeviceStatus):
     def _get_run_state(self):
         """Get current run state."""
         if not self._run_state:
-            state = self.lookup_enum(["State", "state"])
+            state, raw_state = self.lookup_enum_with_raw(["State", "state"])
             if not state:
-                self._run_state = STATE_DISHWASHER_POWER_OFF
+                if isinstance(raw_state, str) and raw_state:
+                    self._run_state = DISHWASHER_RAW_STATE_MAP.get(
+                        raw_state, raw_state
+                    )
+                else:
+                    self._run_state = STATE_DISHWASHER_POWER_OFF
             else:
                 self._run_state = state
         return self._run_state
@@ -94,9 +108,9 @@ class DishWasherStatus(DeviceStatus):
     def _get_process(self):
         """Get current process."""
         if not self._process:
-            process = self.lookup_enum(["Process", "process"])
+            process, raw_process = self.lookup_enum_with_raw(["Process", "process"])
             if not process:
-                self._process = StateOptions.NONE
+                self._process = raw_process or StateOptions.NONE
             else:
                 self._process = process
         return self._process

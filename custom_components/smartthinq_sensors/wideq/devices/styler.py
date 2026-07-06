@@ -17,6 +17,15 @@ STATE_STYLER_ERROR_NO_ERROR = [
     "No_Error",
 ]
 
+STYLER_RAW_STATE_MAP = {
+    "POWEROFF": STATE_STYLER_POWER_OFF,
+    "POWER_OFF": STATE_STYLER_POWER_OFF,
+    "OFF": STATE_STYLER_POWER_OFF,
+    "END": STATE_STYLER_END[0],
+    "COMPLETE": STATE_STYLER_END[1],
+    "COMPLETED": STATE_STYLER_END[1],
+}
+
 BIT_FEATURES = {
     WashDeviceFeatures.CHILDLOCK: ["ChildLock", "childLock"],
     WashDeviceFeatures.NIGHTDRY: ["NightDry", "nightDry"],
@@ -70,9 +79,12 @@ class StylerStatus(DeviceStatus):
     def _get_run_state(self):
         """Get current run state."""
         if not self._run_state:
-            state = self.lookup_enum(["State", "state"])
+            state, raw_state = self.lookup_enum_with_raw(["State", "state"])
             if not state:
-                self._run_state = STATE_STYLER_POWER_OFF
+                if isinstance(raw_state, str) and raw_state:
+                    self._run_state = STYLER_RAW_STATE_MAP.get(raw_state, raw_state)
+                else:
+                    self._run_state = STATE_STYLER_POWER_OFF
             else:
                 self._run_state = state
         return self._run_state
@@ -80,9 +92,12 @@ class StylerStatus(DeviceStatus):
     def _get_pre_state(self):
         """Get previous run state."""
         if not self._pre_state:
-            state = self.lookup_enum(["PreState", "preState"])
+            state, raw_state = self.lookup_enum_with_raw(["PreState", "preState"])
             if not state:
-                self._pre_state = STATE_STYLER_POWER_OFF
+                if isinstance(raw_state, str) and raw_state:
+                    self._pre_state = STYLER_RAW_STATE_MAP.get(raw_state, raw_state)
+                else:
+                    self._pre_state = STATE_STYLER_POWER_OFF
             else:
                 self._pre_state = state
         return self._pre_state
