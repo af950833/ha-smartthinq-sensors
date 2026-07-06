@@ -1428,9 +1428,14 @@ class ClientAsync:
                 # for debug
                 if emul_device := await asyncio.to_thread(self._load_emul_devices):
                     new_devices.extend(emul_device)
-            self._devices = {
-                d[KEY_DEVICE_ID]: d for d in new_devices if KEY_DEVICE_ID in d
-            }
+            devices = {}
+            for dev in new_devices:
+                if KEY_DEVICE_ID not in dev:
+                    continue
+                device_id = dev[KEY_DEVICE_ID]
+                current = self._devices.get(device_id) if self._devices else None
+                devices[device_id] = self._merge_dicts(current, dev)
+            self._devices = devices
 
     @property
     def api_version(self):
@@ -1560,6 +1565,23 @@ class ClientAsync:
                 _LOGGER.debug("ThinQ SSE monitor callback failed", exc_info=True)
 
     @staticmethod
+    def _merge_dicts(current: dict | None, update: dict | None) -> dict:
+        """Return a recursive merge preserving cached keys missing from updates."""
+        if not isinstance(current, dict):
+            return update.copy() if isinstance(update, dict) else {}
+        if not isinstance(update, dict):
+            return current.copy()
+
+        merged = current.copy()
+        for key, value in update.items():
+            old_value = merged.get(key)
+            if isinstance(old_value, dict) and isinstance(value, dict):
+                merged[key] = ClientAsync._merge_dicts(old_value, value)
+            else:
+                merged[key] = value
+        return merged
+
+    @staticmethod
     def _decode_sse_payload(data: str) -> dict | None:
         """Decode a ThinQ Web SSE payload."""
         if not data:
@@ -1638,8 +1660,7 @@ class ClientAsync:
             return
         current = self._devices[device_id].get("snapshot")
         if isinstance(current, dict):
-            current.update(snapshot)
-            snapshot = current
+            snapshot = self._merge_dicts(current, snapshot)
         self._devices[device_id]["snapshot"] = snapshot
         self._last_monitor_update = datetime.now(timezone.utc)
         _LOGGER.debug("ThinQ SSE updated cached snapshot for device %s", device_id)
