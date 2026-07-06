@@ -1045,6 +1045,31 @@ class DeviceStatus:
 
         return self._device.model_info.enum_name(curr_key, value)
 
+    def lookup_enum_with_raw(self, key, data_is_num=False):
+        """Lookup enum value and return the raw value when enum mapping fails."""
+        curr_key = self._get_data_key(key)
+        if not curr_key:
+            return (None, None)
+        raw_value = self._data[curr_key]
+        enum_key = raw_value
+        if data_is_num:
+            try:
+                enum_key = str(int(raw_value))
+            except (TypeError, ValueError):
+                pass
+        enum_value = self._device.model_info.enum_name(curr_key, enum_key)
+        if enum_value is None and raw_value not in (None, "", "IGNORE"):
+            status = f"{self._device.name}:{curr_key}:{raw_value}"
+            if self._device.is_unknown_status(status):
+                _LOGGER.debug(
+                    "Enum mismatch for device %s: key=%s raw=%s model=%s",
+                    self._device.name,
+                    curr_key,
+                    raw_value,
+                    self._device.device_info.model_name,
+                )
+        return (enum_value, raw_value)
+
     def lookup_enum_bool(self, key):
         """Lookup value for a specific key of type enum checking for bool type."""
         value = self.lookup_enum(key, True)

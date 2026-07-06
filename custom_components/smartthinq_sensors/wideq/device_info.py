@@ -7,7 +7,7 @@ from typing import Any
 from .const import StateOptions
 
 KEY_DEVICE_ID = "deviceId"
-SNAPSHOT_ROOT_KEYS = ("refState",)
+SNAPSHOT_ROOT_KEYS = ("refState", "washerDryer", "dishwasher", "styler")
 
 _LOGGER = logging.getLogger(__name__)
 
