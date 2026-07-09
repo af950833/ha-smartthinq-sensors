@@ -1380,6 +1380,8 @@ class ClientAsync:
         self._lock = asyncio.Lock()
         self._energy_history_lock = asyncio.Lock()
         self._last_energy_history_request = datetime.min.replace(tzinfo=timezone.utc)
+        self._device_detail_lock = asyncio.Lock()
+        self._last_device_detail_request = datetime.min.replace(tzinfo=timezone.utc)
         # The last list of devices we got from the server. This is the
         # raw JSON list data describing the devices.
         self._devices = None
@@ -1402,6 +1404,7 @@ class ClientAsync:
         self._monitor_connection_id: str | None = None
         self._monitor_token: str | None = None
         self._monitor_connected = False
+        self._monitor_connected_on = datetime.min.replace(tzinfo=timezone.utc)
         self._last_monitor_update = datetime.min.replace(tzinfo=timezone.utc)
         self._last_monitor_extend = datetime.min.replace(tzinfo=timezone.utc)
 
@@ -1548,6 +1551,18 @@ class ClientAsync:
             return True
         diff = (datetime.now(timezone.utc) - self._last_monitor_update).total_seconds()
         return diff < MIN_TIME_BETWEEN_SSE_RECONNECT
+
+    @property
+    def monitor_connected(self) -> bool:
+        """Return if the ThinQ Web SSE monitor is currently connected."""
+        return self._monitor_connected
+
+    def monitor_connected_for(self, seconds: float) -> bool:
+        """Return if the ThinQ Web SSE monitor stayed connected long enough."""
+        if not self._monitor_connected:
+            return False
+        diff = (datetime.now(timezone.utc) - self._monitor_connected_on).total_seconds()
+        return diff >= seconds
 
     def invalidate_device_snapshot(self, device_id: str) -> None:
         """Drop a cached device snapshot after a local control command."""
@@ -1714,6 +1729,7 @@ class ClientAsync:
         self._monitor_connection_id = None
         self._monitor_token = None
         self._monitor_connected = False
+        self._monitor_connected_on = datetime.min.replace(tzinfo=timezone.utc)
 
     async def _register_monitor_client(self) -> None:
         """Register or extend the ThinQ Web SSE monitoring client."""
@@ -1744,22 +1760,32 @@ class ClientAsync:
         retry_delay = MIN_TIME_BETWEEN_SSE_RECONNECT
         while self._connected:
             try:
+                _LOGGER.debug("ThinQ SSE monitor refreshing auth")
                 await self.refresh_auth()
+                _LOGGER.debug("ThinQ SSE monitor registering client")
                 await self._register_monitor_client()
-                await self._read_monitor_events()
-                retry_delay = MIN_TIME_BETWEEN_SSE_RECONNECT
+                _LOGGER.debug("ThinQ SSE monitor opening event stream")
+                if await self._read_monitor_events():
+                    retry_delay = MIN_TIME_BETWEEN_SSE_RECONNECT
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # pylint: disable=broad-except
+                was_connected = self._monitor_connected
                 self._monitor_connected = False
+                self._monitor_connected_on = datetime.min.replace(tzinfo=timezone.utc)
                 _LOGGER.debug("ThinQ SSE monitor disconnected: %s", err)
+                if was_connected:
+                    retry_delay = MIN_TIME_BETWEEN_SSE_RECONNECT
+                _LOGGER.debug(
+                    "ThinQ SSE monitor retrying in %s seconds", retry_delay
+                )
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, SSE_RETRY_DELAY_MAX)
 
-    async def _read_monitor_events(self) -> None:
+    async def _read_monitor_events(self) -> bool:
         """Open and consume the ThinQ Web SSE event stream."""
         if not self._monitor_connection_id or not self._monitor_token:
-            return
+            return False
         headers = self.session._nscreen_headers(
             {"x-nscreen-token": self._monitor_token, "Accept": "text/event-stream"}
         )
@@ -1777,6 +1803,8 @@ class ClientAsync:
                 raise exc.APIError(f"ThinQ SSE monitor HTTP {resp.status}", resp.status)
             _LOGGER.debug("ThinQ SSE monitor connected")
             self._monitor_connected = True
+            self._monitor_connected_on = datetime.now(timezone.utc)
+            stream_connected = True
             event = ""
             data_lines: list[str] = []
             async for raw_line in resp.content:
@@ -1799,11 +1827,37 @@ class ClientAsync:
                 elif line.startswith("data:"):
                     data_lines.append(line[5:].strip())
             self._monitor_connected = False
+            self._monitor_connected_on = datetime.min.replace(tzinfo=timezone.utc)
+            return stream_connected
 
     def _check_connected(self):
         """Check that client is in connected status."""
         if not self._connected:
             raise exc.ClientDisconnected()
+
+    async def refresh_device(self, device_id: str):
+        """Refresh a single device using the ThinQ Web detail API."""
+        async with self._lock:
+            device = await self.session.get2(f"service/devices/{device_id}")
+            if not isinstance(device, dict):
+                return False
+            device[KEY_DEVICE_ID] = device.get(KEY_DEVICE_ID) or device_id
+            current = self._devices.get(device_id) if self._devices else None
+            if self._devices is None:
+                self._devices = {}
+            self._devices[device_id] = self._merge_dicts(current, device)
+            self._last_snapshot_refresh = datetime.now(timezone.utc)
+            return True
+
+    async def refresh_device_spaced(self, device_id: str, min_interval: float):
+        """Refresh a single device while spacing detail API calls globally."""
+        async with self._device_detail_lock:
+            call_time = datetime.now(timezone.utc)
+            diff = (call_time - self._last_device_detail_request).total_seconds()
+            if diff < min_interval:
+                await asyncio.sleep(min_interval - diff)
+            self._last_device_detail_request = datetime.now(timezone.utc)
+            return await self.refresh_device(device_id)
 
     async def refresh_devices(self):
         """Refresh the devices' information for this client."""
