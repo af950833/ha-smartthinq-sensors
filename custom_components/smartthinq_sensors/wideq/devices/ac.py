@@ -129,6 +129,7 @@ CMD_STATE_AUTODRY = [CTRL_BASIC, "Set", STATE_AUTODRY]
 CMD_STATE_MODE_JET = [CTRL_BASIC, "Set", STATE_MODE_JET]
 CMD_STATE_LIGHTING_DISPLAY = [CTRL_BASIC, "Set", STATE_LIGHTING_DISPLAY]
 CMD_RESERVATION_SLEEP_TIME = [CTRL_BASIC, "Set", STATE_RESERVATION_SLEEP_TIME]
+CMD_ENABLE_EVENT_V2 = ["allEventEnable", "Set", "airState.mon.timeout"]
 
 # AWHP Section
 STATE_AWHP_TEMP_MODE = ["AwhpTempSwitch", "airState.miscFuncState.awhpTempSwitch"]
@@ -147,8 +148,6 @@ CMD_STATE_HOT_WATER_MODE = [CTRL_BASIC, "Set", STATE_HOT_WATER_MODE]
 CMD_STATE_HOT_WATER_TARGET_TEMP = [CTRL_BASIC, "Set", STATE_HOT_WATER_TARGET_TEMP]
 CMD_STATE_MODE_AWHP_SILENT = [CTRL_BASIC, "Set", STATE_MODE_AWHP_SILENT]
 
-CMD_ENABLE_EVENT_V2 = ["allEventEnable", "Set", "airState.mon.timeout"]
-
 DEFAULT_MIN_TEMP = 18
 DEFAULT_MAX_TEMP = 30
 AWHP_MIN_TEMP = 5
@@ -159,6 +158,13 @@ TEMP_STEP_HALF = 0.5
 
 ADD_FEAT_POLL_INTERVAL = 300  # 5 minutes
 ENERGY_USAGE_POLL_INTERVAL = 600  # 10 minutes
+TEMP_HUMIDITY_DETAIL_POLL_INTERVAL = 120  # 2 minutes
+TEMP_HUMIDITY_DETAIL_POLL_INTERVAL_OFF = 600  # 10 minutes
+TEMP_HUMIDITY_DETAIL_MIN_DEVICE_INTERVAL = 15  # seconds
+TEMP_HUMIDITY_POWER_ON_DELAY = 30  # seconds
+TEMP_HUMIDITY_MONITOR_SETTLE_DELAY = 30  # seconds
+TEMP_HUMIDITY_EVENT_TIMEOUT = "10"
+TEMP_HUMIDITY_EVENT_SETTLE_DELAY = 2
 
 LIGHTING_DISPLAY_OFF = "0"
 LIGHTING_DISPLAY_ON = "1"
@@ -273,6 +279,9 @@ class AirConditionerDevice(Device):
         }
         self._energy_usage_supported = True
         self._last_energy_usage_poll: datetime | None = None
+        self._last_temp_humidity_detail_poll: datetime | None = None
+        self._last_temp_humidity_power_state: bool | None = None
+        self._temp_humidity_power_on_since: datetime | None = None
 
         self._filter_status = None
         self._filter_status_supported = True
@@ -1525,6 +1534,96 @@ class AirConditionerDevice(Device):
             self._filter_status = await self.get_filter_state_v2()
             await self._update_energy_usage()
 
+    async def _refresh_temp_humidity_detail(self) -> bool:
+        """Refresh AC detail snapshot for current temperature and humidity."""
+        if self._should_poll or self._client.emulation:
+            return False
+        if not self._status:
+            return False
+        if not self._client.monitor_connected:
+            _LOGGER.debug(
+                "Skipping ThinQ AC temperature/humidity detail refresh until "
+                "SSE monitor is connected"
+            )
+            return False
+        if not self._client.monitor_connected_for(TEMP_HUMIDITY_MONITOR_SETTLE_DELAY):
+            _LOGGER.debug(
+                "Skipping ThinQ AC temperature/humidity detail refresh until "
+                "SSE monitor is stable for %s seconds",
+                TEMP_HUMIDITY_MONITOR_SETTLE_DELAY,
+            )
+            return False
+
+        call_time = datetime.now()
+        is_on = self._status.is_on
+        previous_is_on = self._last_temp_humidity_power_state
+
+        if previous_is_on is None:
+            self._last_temp_humidity_power_state = is_on
+            if is_on:
+                self._temp_humidity_power_on_since = call_time
+                return False
+            if self._last_temp_humidity_detail_poll is None:
+                self._last_temp_humidity_detail_poll = call_time
+                return False
+        elif previous_is_on != is_on:
+            self._last_temp_humidity_power_state = is_on
+            if is_on:
+                self._temp_humidity_power_on_since = call_time
+            else:
+                self._temp_humidity_power_on_since = None
+                self._last_temp_humidity_detail_poll = call_time
+                return False
+
+        force_refresh = False
+        if is_on and self._temp_humidity_power_on_since is not None:
+            diff = (call_time - self._temp_humidity_power_on_since).total_seconds()
+            if diff < TEMP_HUMIDITY_POWER_ON_DELAY:
+                return False
+            self._temp_humidity_power_on_since = None
+            force_refresh = True
+
+        poll_interval = (
+            TEMP_HUMIDITY_DETAIL_POLL_INTERVAL
+            if is_on
+            else TEMP_HUMIDITY_DETAIL_POLL_INTERVAL_OFF
+        )
+        if not force_refresh and self._last_temp_humidity_detail_poll is not None:
+            diff = (call_time - self._last_temp_humidity_detail_poll).total_seconds()
+            if diff < poll_interval:
+                return False
+
+        self._last_temp_humidity_detail_poll = call_time
+        try:
+            keys = self._get_cmd_keys(CMD_ENABLE_EVENT_V2)
+            async with self._control_lock:
+                _LOGGER.debug(
+                    "Enabling ThinQ AC detail monitoring for %s seconds",
+                    TEMP_HUMIDITY_EVENT_TIMEOUT,
+                )
+                await self._client.session.device_v2_controls(
+                    self._device_info.device_id,
+                    keys[0],
+                    keys[1],
+                    keys[2],
+                    TEMP_HUMIDITY_EVENT_TIMEOUT,
+                    ctrl_path="control",
+                )
+                await asyncio.sleep(TEMP_HUMIDITY_EVENT_SETTLE_DELAY)
+            refreshed = await self._client.refresh_device_spaced(
+                self._device_info.device_id,
+                TEMP_HUMIDITY_DETAIL_MIN_DEVICE_INTERVAL,
+            )
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.warning(
+                "ThinQ AC temperature/humidity detail refresh failed",
+                exc_info=True,
+            )
+            return False
+        if refreshed:
+            _LOGGER.debug("ThinQ AC temperature/humidity detail snapshot refreshed")
+        return refreshed
+
     async def poll(self) -> AirConditionerStatus | None:
         """Poll the device's current state."""
         res = await self._device_poll(
@@ -1533,6 +1632,14 @@ class AirConditionerDevice(Device):
         )
         if not res:
             return None
+        self._status = AirConditionerStatus(self, res)
+        if await self._refresh_temp_humidity_detail():
+            refreshed_res = await self._device_poll(
+                additional_poll_interval_v1=ADD_FEAT_POLL_INTERVAL,
+                additional_poll_interval_v2=ADD_FEAT_POLL_INTERVAL,
+            )
+            if refreshed_res:
+                res = refreshed_res
 
         # update power for ACv1
         if self._should_poll and not self.is_air_to_water:
