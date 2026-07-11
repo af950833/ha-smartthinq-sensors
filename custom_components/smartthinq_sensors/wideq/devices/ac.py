@@ -1106,10 +1106,15 @@ class AirConditionerDevice(Device):
         """Set the device's operating mode to an `OpMode` value."""
         if mode not in self.op_modes:
             raise ValueError(f"Invalid operating mode: {mode}")
+        was_airclean = (
+            self._status is not None
+            and self._status.operation_mode == ACMode.AIRCLEAN.name
+        )
+        airclean_enabled = self._status is not None and self._status.mode_airclean
         keys = self._get_cmd_keys(CMD_STATE_OP_MODE)
         mode_value = self.model_info.enum_value(keys[2], ACMode[mode].value)
         await self.set(keys[0], keys[1], key=keys[2], value=mode_value)
-        if mode != ACMode.AIRCLEAN.name:
+        if mode != ACMode.AIRCLEAN.name and (was_airclean or airclean_enabled):
             await self._set_mode_airclean_value(False)
 
     async def set_fan_speed(self, speed):
