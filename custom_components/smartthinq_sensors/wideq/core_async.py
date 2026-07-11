@@ -195,6 +195,7 @@ class CoreAsync:
             self._client_id_created_on = datetime.fromtimestamp(0, timezone.utc)
         self._update_clientid_callback = update_clientid_callback
         self._lang_pack_url = None
+        self._refresh_client_id_before_next_post = False
 
         if session:
             self._session = session
@@ -279,6 +280,10 @@ class CoreAsync:
     def _web_client_id(self) -> str:
         """Return a ThinQ Web-style client ID."""
         return self._get_client_id("web") or V2_CLIENT_ID
+
+    def refresh_client_id_before_next_post(self) -> None:
+        """Refresh the client ID before the next ThinQ2 POST request."""
+        self._refresh_client_id_before_next_post = True
 
     @staticmethod
     async def _get_json_resp(response: aiohttp.ClientResponse) -> dict:
@@ -414,7 +419,16 @@ class CoreAsync:
 
         _LOGGER.debug("lgedm2_post before: %s", url)
 
-        client_id = self._get_client_id(user_number)
+        force_refresh_client_id = (
+            is_api_v2
+            and user_number is not None
+            and self._refresh_client_id_before_next_post
+        )
+        if force_refresh_client_id:
+            _LOGGER.debug("Refreshing client ID before first POST after SSE reconnect")
+            self._refresh_client_id_before_next_post = False
+
+        client_id = self._get_client_id(user_number, force_refresh_client_id)
         async with self._get_session().post(
             url=url,
             json=data if is_api_v2 else {DATA_ROOT: data},
@@ -1804,6 +1818,7 @@ class ClientAsync:
             _LOGGER.debug("ThinQ SSE monitor connected")
             self._monitor_connected = True
             self._monitor_connected_on = datetime.now(timezone.utc)
+            self._auth.gateway.core.refresh_client_id_before_next_post()
             stream_connected = True
             event = ""
             data_lines: list[str] = []
